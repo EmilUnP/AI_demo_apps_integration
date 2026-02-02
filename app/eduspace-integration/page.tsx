@@ -3,7 +3,7 @@
 import { useState, useRef } from 'react';
 import Link from 'next/link';
 
-const DEFAULT_BASE_URL = 'http://localhost:4000/api/v1/teacher';
+const DEFAULT_BASE_URL = 'https://edu-space-api-server.vercel.app/api/v1/teacher';
 
 const EXAM_WITH_DOCUMENT_ID = {
   document_id: 'uuid-from-documents-upload',
@@ -293,7 +293,7 @@ export default function EduSpaceIntegrationPage() {
             </ol>
           </div>
           <div className="mt-4 p-4 rounded-xl bg-slate-800/50 border border-slate-700 text-slate-300 text-sm">
-            <strong className="text-slate-200">Port setup:</strong> EduSpace app on <code className="bg-slate-900 px-1 rounded">3000</code>/<code className="bg-slate-900 px-1 rounded">3001</code>, EduSpace backend on <code className="bg-slate-900 px-1 rounded">4000</code>, this demo on <code className="bg-slate-900 px-1 rounded">3002</code>. Base URL should point to the backend: <code className="bg-slate-900 px-1 rounded">http://localhost:4000/api/v1/teacher</code>. Because this demo (3002) and the API (4000) are different origins, the EduSpace backend must allow CORS for <code className="bg-slate-900 px-1 rounded">http://localhost:3002</code>.
+            <strong className="text-slate-200">Port setup:</strong> EduSpace app on <code className="bg-slate-900 px-1 rounded">3000</code>/<code className="bg-slate-900 px-1 rounded">3001</code>, EduSpace backend on <code className="bg-slate-900 px-1 rounded">4000</code>, this demo on <code className="bg-slate-900 px-1 rounded">3002</code>. Base URL should point to the backend: <code className="bg-slate-900 px-1 rounded">https://edu-space-api-server.vercel.app/api/v1/teacher</code>. Because this demo (3002) and the API (4000) are different origins, the EduSpace backend must allow CORS for <code className="bg-slate-900 px-1 rounded">http://localhost:3002</code>.
           </div>
         </div>
 
@@ -318,7 +318,7 @@ export default function EduSpaceIntegrationPage() {
               value={baseUrl}
               onChange={(e) => setBaseUrl(e.target.value)}
               className="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-              placeholder="http://localhost:4000/api/v1/teacher"
+              placeholder="https://edu-space-api-server.vercel.app/api/v1/teacher"
             />
             <p className="mt-1 text-sm text-slate-500">Use your Vercel URL when deployed (e.g. https://your-app.vercel.app/api/v1/teacher).</p>
           </div>
@@ -348,7 +348,7 @@ export default function EduSpaceIntegrationPage() {
               <div className="mt-3 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-sm space-y-2">
                 <p className="font-medium">Key rejected or request failed. Check:</p>
                 <ul className="list-disc list-inside ml-2 space-y-1 text-slate-300">
-                  <li>Is the EduSpace API running at the base URL? (e.g. <code className="bg-slate-800 px-1 rounded">http://localhost:4000</code>)</li>
+                  <li>Is the EduSpace API running at the base URL? (e.g. <code className="bg-slate-800 px-1 rounded">http://https://edu-space-api-server.vercel.app/api/v1/teacher</code>)</li>
                   <li>Is the key from EduSpace → API Integration and not revoked?</li>
                   <li>This demo runs on port 3002; the API on 4000 is a different origin. The EduSpace backend must send CORS headers allowing <code className="bg-slate-800 px-1 rounded">http://localhost:3002</code>.</li>
                 </ul>
