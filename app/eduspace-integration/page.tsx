@@ -282,19 +282,7 @@ export default function EduSpaceIntegrationPage() {
       <main className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
         <div className="mb-10">
           <h1 className="text-4xl font-extrabold text-slate-100 mb-2">EduSpace API Integration</h1>
-          <p className="text-slate-400 text-lg">
-            Use your own apps to generate new exams and lessons via the EduSpace API. Create an API key, call the endpoints, and track usage in the Usage tab.
-          </p>
-          <div className="mt-4 p-4 rounded-xl bg-slate-900/50 border border-slate-700 text-slate-300 text-sm">
-            <h3 className="font-semibold text-slate-200 mb-2">How it works</h3>
-            <ol className="list-decimal list-inside space-y-1">
-              <li><strong>Keys & documentation</strong> — Create an API key and copy the two endpoints (exam and lesson generation) with real request bodies and options.</li>
-              <li><strong>Usage</strong> — See how many requests were made, how many succeeded or failed, and per-key and per-endpoint breakdown (in EduSpace).</li>
-            </ol>
-          </div>
-          <div className="mt-4 p-4 rounded-xl bg-slate-800/50 border border-slate-700 text-slate-300 text-sm">
-            <strong className="text-slate-200">Port setup:</strong> EduSpace app on <code className="bg-slate-900 px-1 rounded">3000</code>/<code className="bg-slate-900 px-1 rounded">3001</code>, EduSpace backend on <code className="bg-slate-900 px-1 rounded">4000</code>, this demo on <code className="bg-slate-900 px-1 rounded">3002</code>. Base URL should point to the backend: <code className="bg-slate-900 px-1 rounded">https://edu-space-api-server.vercel.app/api/v1/teacher</code>. Because this demo (3002) and the API (4000) are different origins, the EduSpace backend must allow CORS for <code className="bg-slate-900 px-1 rounded">http://localhost:3002</code>.
-          </div>
+
         </div>
 
         {/* Recommended flow */}
@@ -350,8 +338,7 @@ export default function EduSpaceIntegrationPage() {
                 <ul className="list-disc list-inside ml-2 space-y-1 text-slate-300">
                   <li>Is the EduSpace API running at the base URL? (e.g. <code className="bg-slate-800 px-1 rounded">http://https://edu-space-api-server.vercel.app/api/v1/teacher</code>)</li>
                   <li>Is the key from EduSpace → API Integration and not revoked?</li>
-                  <li>This demo runs on port 3002; the API on 4000 is a different origin. The EduSpace backend must send CORS headers allowing <code className="bg-slate-800 px-1 rounded">http://localhost:3002</code>.</li>
-                </ul>
+                  </ul>
                 <p className="text-slate-400">See the Response section below for the exact status and error from the API.</p>
               </div>
             )}
@@ -553,12 +540,6 @@ export default function EduSpaceIntegrationPage() {
           </div>
         )}
 
-        <div className="mt-10 p-6 rounded-2xl bg-slate-900/50 border border-slate-700">
-          <h3 className="text-lg font-semibold text-slate-200 mb-3">Authentication</h3>
-          <p className="text-slate-400 leading-relaxed">
-            Every request must include <code className="bg-slate-800 px-1.5 py-0.5 rounded font-mono text-slate-300">Authorization: Bearer YOUR_API_KEY</code>. Keep your key secret and do not commit it to code.
-          </p>
-        </div>
       </main>
     </div>
   );
