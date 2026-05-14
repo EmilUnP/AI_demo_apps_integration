@@ -117,11 +117,6 @@ const EDUCATION_PLAN_REST_POST_EXAMPLE = {
   content: [],
 };
 
-const EDUCATION_PLAN_PATCH_EXAMPLE = {
-  name: 'Renamed plan',
-  audience: 'Grade 11',
-};
-
 /** Saved exams: camelCase on POST (per API). */
 const EXAM_SAVE_POST_EXAMPLE = {
   title: 'Saved quiz',
@@ -183,9 +178,6 @@ export default function EduatorIntegrationPage() {
   const [educationPlanRestId, setEducationPlanRestId] = useState('');
   const [educationPlanCreatePayload, setEducationPlanCreatePayload] = useState(
     JSON.stringify(EDUCATION_PLAN_REST_POST_EXAMPLE, null, 2),
-  );
-  const [educationPlanPatchPayload, setEducationPlanPatchPayload] = useState(
-    JSON.stringify(EDUCATION_PLAN_PATCH_EXAMPLE, null, 2),
   );
 
   const [examsPage, setExamsPage] = useState(1);
@@ -1443,7 +1435,7 @@ export default function EduatorIntegrationPage() {
             </div>
 
             <div className="mt-6 p-6 rounded-2xl bg-slate-900/50 border border-slate-700">
-              <h3 className="text-slate-200 font-semibold mb-3">POST /education-plans · PATCH /education-plans/:id · DELETE /education-plans/:id</h3>
+              <h3 className="text-slate-200 font-semibold mb-3">POST /education-plans · DELETE /education-plans/:id</h3>
               <p className="text-sm text-slate-400 mb-4">
                 REST writes use <strong className="text-slate-300">snake_case</strong> (e.g. <code className="bg-slate-800 px-1 rounded">period_months</code>,{' '}
                 <code className="bg-slate-800 px-1 rounded">document_ids</code>, <code className="bg-slate-800 px-1 rounded">content</code>).
@@ -1480,32 +1472,9 @@ export default function EduatorIntegrationPage() {
                 type="button"
                 onClick={() => runJsonRequest('POST', '/education-plans', educationPlanCreatePayload)}
                 disabled={loading}
-                className="px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-xl hover:bg-indigo-700 disabled:opacity-50 mb-6"
+                className="px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-xl hover:bg-indigo-700 disabled:opacity-50"
               >
                 Create plan (REST)
-              </button>
-              <label className="block text-sm font-medium text-slate-300 mb-2">PATCH /education-plans/:id</label>
-              <textarea
-                value={educationPlanPatchPayload}
-                onChange={(e) => setEducationPlanPatchPayload(e.target.value)}
-                rows={6}
-                className="w-full px-4 py-3 bg-slate-950 border border-slate-700 rounded-xl text-slate-100 font-mono text-sm mb-3"
-              />
-              <button
-                type="button"
-                onClick={() =>
-                  educationPlanRestId.trim()
-                    ? runJsonRequest(
-                        'PATCH',
-                        `/education-plans/${encodeURIComponent(educationPlanRestId.trim())}`,
-                        educationPlanPatchPayload,
-                      )
-                    : setResult({ error: 'Enter plan UUID for PATCH.' })
-                }
-                disabled={loading}
-                className="px-6 py-2.5 bg-slate-700 text-white font-medium rounded-xl hover:bg-slate-600 disabled:opacity-50 border border-slate-600"
-              >
-                Patch plan
               </button>
             </div>
           </>
