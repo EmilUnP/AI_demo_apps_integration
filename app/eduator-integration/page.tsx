@@ -19,13 +19,41 @@ const DEFAULT_LOGIN_EMAIL =
     ? process.env.NEXT_PUBLIC_EDUATOR_LOGIN_EMAIL.trim()
     : '';
 
+/** Base64 in JSON is heavy; cap keeps the demo page responsive. Raise if your backend allows larger bodies. */
+const DOCUMENT_UPLOAD_MAX_BYTES = 15 * 1024 * 1024;
+
 const DOCUMENT_CREATE_EXAMPLE = {
   title: 'Math Chapter 1',
   fileName: 'chapter-1.pdf',
   fileType: 'application/pdf',
   fileSize: 245760,
-  localPath: 'storage/docs/chapter-1.pdf',
+  contentBase64: '<BASE64_OF_FILE_BYTES>',
 };
+
+const guessMimeFromFileName = (name: string): string => {
+  const lower = name.toLowerCase();
+  if (lower.endsWith('.pdf')) return 'application/pdf';
+  if (lower.endsWith('.docx')) return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  if (lower.endsWith('.doc')) return 'application/msword';
+  if (lower.endsWith('.txt')) return 'text/plain';
+  return 'application/octet-stream';
+};
+
+const readFileAsBase64 = (file: File): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result !== 'string') {
+        reject(new Error('Could not read file'));
+        return;
+      }
+      const comma = result.indexOf(',');
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = () => reject(new Error(reader.error?.message ?? 'Read failed'));
+    reader.readAsDataURL(file);
+  });
 
 const EXAM_WITH_DOCUMENT_ID = {
   documentId: 'uuid-from-documents',
@@ -71,13 +99,55 @@ const LESSON_EXAMPLE_FULL = {
 const EDUCATION_PLAN_EXAMPLE = {
   documentId: 'uuid-from-documents',
   name: 'Grade 10 Math Plan',
-  language: 'en',
+  language: 'az',
   periodMonths: 3,
   sessionsPerWeek: 3,
   hoursPerSession: 1,
 };
 
-type MainTab = 'documents' | 'exam' | 'lesson' | 'education';
+/** REST writes use snake_case (per API). */
+const EDUCATION_PLAN_REST_POST_EXAMPLE = {
+  name: 'Semester plan',
+  description: null,
+  period_months: 3,
+  sessions_per_week: 3,
+  hours_per_session: 1,
+  audience: 'Grade 10',
+  document_ids: ['DOCUMENT_UUID'],
+  content: [],
+};
+
+const EDUCATION_PLAN_PATCH_EXAMPLE = {
+  name: 'Renamed plan',
+  audience: 'Grade 11',
+};
+
+/** Saved exams: camelCase on POST (per API). */
+const EXAM_SAVE_POST_EXAMPLE = {
+  title: 'Saved quiz',
+  language: 'en',
+  durationMinutes: 45,
+  isPublished: false,
+  questions: [],
+};
+
+const CHAT_CONVERSATION_POST_EXAMPLE = {
+  title: 'Lesson prep',
+  documentIds: ['DOCUMENT_UUID'],
+};
+
+const CHAT_PATCH_EXAMPLE = {
+  title: 'Renamed thread',
+  documentIds: ['DOCUMENT_UUID'],
+};
+
+const CHAT_MESSAGE_POST_EXAMPLE = {
+  message: 'Summarize the key ideas for my next class.',
+  documentIds: ['DOCUMENT_UUID'],
+  shortAnswer: false,
+};
+
+type MainTab = 'documents' | 'exam' | 'lesson' | 'education' | 'chat';
 
 export default function EduatorIntegrationPage() {
   const [baseUrl, setBaseUrl] = useState(DEFAULT_BASE_URL);
@@ -109,7 +179,30 @@ export default function EduatorIntegrationPage() {
 
   const [lessonId, setLessonId] = useState('');
 
+  const [educationPlansSearch, setEducationPlansSearch] = useState('');
+  const [educationPlanRestId, setEducationPlanRestId] = useState('');
+  const [educationPlanCreatePayload, setEducationPlanCreatePayload] = useState(
+    JSON.stringify(EDUCATION_PLAN_REST_POST_EXAMPLE, null, 2),
+  );
+  const [educationPlanPatchPayload, setEducationPlanPatchPayload] = useState(
+    JSON.stringify(EDUCATION_PLAN_PATCH_EXAMPLE, null, 2),
+  );
+
+  const [examsPage, setExamsPage] = useState(1);
+  const [examsPerPage, setExamsPerPage] = useState(10);
+  const [examsSearch, setExamsSearch] = useState('');
+  const [examSavedId, setExamSavedId] = useState('');
+  const [examSavePayload, setExamSavePayload] = useState(JSON.stringify(EXAM_SAVE_POST_EXAMPLE, null, 2));
+
+  const [chatConversationId, setChatConversationId] = useState('');
+  const [chatCreatePayload, setChatCreatePayload] = useState(JSON.stringify(CHAT_CONVERSATION_POST_EXAMPLE, null, 2));
+  const [chatPatchPayload, setChatPatchPayload] = useState(JSON.stringify(CHAT_PATCH_EXAMPLE, null, 2));
+  const [chatMessagePayload, setChatMessagePayload] = useState(JSON.stringify(CHAT_MESSAGE_POST_EXAMPLE, null, 2));
+
   const docsBaseRef = useRef<string>('');
+  const documentFileInputRef = useRef<HTMLInputElement>(null);
+  const [documentPackStatus, setDocumentPackStatus] = useState<string | null>(null);
+  const [documentPacking, setDocumentPacking] = useState(false);
 
   const normalizeToken = (token: string) => {
     const trimmed = token.trim();
@@ -215,6 +308,52 @@ export default function EduatorIntegrationPage() {
     }
   };
 
+  const handleDocumentFileSelected = async (fileList: FileList | null) => {
+    const file = fileList?.[0];
+    if (!file) return;
+    if (file.size > DOCUMENT_UPLOAD_MAX_BYTES) {
+      setDocumentPackStatus(null);
+      setResult({
+        error: `File is larger than ${DOCUMENT_UPLOAD_MAX_BYTES / (1024 * 1024)} MB. Embed a smaller file here, or call the API from a script/CLI.`,
+      });
+      if (documentFileInputRef.current) documentFileInputRef.current.value = '';
+      return;
+    }
+    setDocumentPacking(true);
+    setDocumentPackStatus('Encoding file…');
+    setResult(null);
+    try {
+      const base64 = await readFileAsBase64(file);
+      const titleFromName = file.name.replace(/\.[^/.]+$/, '') || file.name;
+      let existing: Record<string, unknown> = {};
+      try {
+        existing = JSON.parse(documentCreatePayload || '{}') as Record<string, unknown>;
+      } catch {
+        existing = {};
+      }
+      const next: Record<string, unknown> = {
+        ...existing,
+        title:
+          typeof existing.title === 'string' && existing.title.trim() && existing.title !== 'Math Chapter 1'
+            ? existing.title
+            : titleFromName,
+        fileName: file.name,
+        fileType: file.type || guessMimeFromFileName(file.name),
+        fileSize: file.size,
+        contentBase64: base64,
+      };
+      delete next.localPath;
+      setDocumentCreatePayload(JSON.stringify(next, null, 2));
+      setDocumentPackStatus(`Included in JSON: ${file.name} (${(file.size / 1024).toFixed(1)} KB).`);
+    } catch (err: unknown) {
+      setDocumentPackStatus(null);
+      setResult({ error: err instanceof Error ? err.message : 'Could not read file' });
+    } finally {
+      setDocumentPacking(false);
+      if (documentFileInputRef.current) documentFileInputRef.current.value = '';
+    }
+  };
+
   const runDocumentCreate = async () => {
     if (!baseUrl?.trim() || !accessToken?.trim()) {
       setResult({ error: 'Base URL and access token are required.' });
@@ -225,6 +364,19 @@ export default function EduatorIntegrationPage() {
     const url = `${apiRoot()}/documents`;
     try {
       const body = JSON.parse(documentCreatePayload || '{}');
+      const hasUpload =
+        typeof body.contentBase64 === 'string' &&
+        body.contentBase64.length > 0 &&
+        body.contentBase64 !== '<BASE64_OF_FILE_BYTES>';
+      const hasLocal =
+        typeof body.localPath === 'string' && body.localPath.trim().length > 0;
+      if (!hasUpload && !hasLocal) {
+        setResult({
+          error: 'Add contentBase64 (use “Choose file” below) or localPath for a file that already exists on the server.',
+        });
+        setLoading(false);
+        return;
+      }
       const response = await fetch(url, {
         method: 'POST',
         headers: getAuthHeaders(),
@@ -382,6 +534,208 @@ export default function EduatorIntegrationPage() {
     }
   };
 
+  const runEducationPlansList = async () => {
+    if (!baseUrl?.trim() || !accessToken?.trim()) {
+      setResult({ error: 'Base URL and access token are required.' });
+      return;
+    }
+    setLoading(true);
+    setResult(null);
+    const q = new URLSearchParams();
+    if (educationPlansSearch.trim()) q.set('search', educationPlansSearch.trim());
+    const qs = q.toString();
+    const url = `${apiRoot()}/education-plans${qs ? `?${qs}` : ''}`;
+    try {
+      const response = await fetch(url, { headers: getAuthHeaders() });
+      const contentType = response.headers.get('content-type');
+      const isJson = contentType?.includes('application/json');
+      const data = isJson ? await response.json().catch(() => ({})) : await response.text();
+      setResult({ status: response.status, data });
+    } catch (err: unknown) {
+      setResult({ error: err instanceof Error ? err.message : 'Request failed' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const runExamsList = async () => {
+    if (!baseUrl?.trim() || !accessToken?.trim()) {
+      setResult({ error: 'Base URL and access token are required.' });
+      return;
+    }
+    setLoading(true);
+    setResult(null);
+    const q = new URLSearchParams({
+      page: String(examsPage),
+      perPage: String(examsPerPage),
+    });
+    if (examsSearch.trim()) q.set('search', examsSearch.trim());
+    const url = `${apiRoot()}/exams?${q.toString()}`;
+    try {
+      const response = await fetch(url, { headers: getAuthHeaders() });
+      const ct = response.headers.get('content-type');
+      const data = ct?.includes('application/json') ? await response.json().catch(() => ({})) : await response.text();
+      setResult({ status: response.status, data });
+    } catch (err: unknown) {
+      setResult({ error: err instanceof Error ? err.message : 'Request failed' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const runExamsStats = async () => {
+    if (!baseUrl?.trim() || !accessToken?.trim()) {
+      setResult({ error: 'Base URL and access token are required.' });
+      return;
+    }
+    setLoading(true);
+    setResult(null);
+    const url = `${apiRoot()}/exams/stats`;
+    try {
+      const response = await fetch(url, { headers: getAuthHeaders() });
+      const ct = response.headers.get('content-type');
+      const data = ct?.includes('application/json') ? await response.json().catch(() => ({})) : await response.text();
+      setResult({ status: response.status, data });
+    } catch (err: unknown) {
+      setResult({ error: err instanceof Error ? err.message : 'Request failed' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const runExamGet = async () => {
+    if (!baseUrl?.trim() || !accessToken?.trim()) {
+      setResult({ error: 'Base URL and access token are required.' });
+      return;
+    }
+    if (!examSavedId?.trim()) {
+      setResult({ error: 'Enter an exam ID (UUID).' });
+      return;
+    }
+    setLoading(true);
+    setResult(null);
+    const url = `${apiRoot()}/exams/${encodeURIComponent(examSavedId.trim())}`;
+    try {
+      const response = await fetch(url, { headers: getAuthHeaders() });
+      const ct = response.headers.get('content-type');
+      const data = ct?.includes('application/json') ? await response.json().catch(() => ({})) : await response.text();
+      setResult({ status: response.status, data });
+    } catch (err: unknown) {
+      setResult({ error: err instanceof Error ? err.message : 'Request failed' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const runChatConversationsList = async () => {
+    if (!baseUrl?.trim() || !accessToken?.trim()) {
+      setResult({ error: 'Base URL and access token are required.' });
+      return;
+    }
+    setLoading(true);
+    setResult(null);
+    const url = `${apiRoot()}/ai/chat/conversations`;
+    try {
+      const response = await fetch(url, { headers: getAuthHeaders() });
+      const ct = response.headers.get('content-type');
+      const data = ct?.includes('application/json') ? await response.json().catch(() => ({})) : await response.text();
+      setResult({ status: response.status, data });
+    } catch (err: unknown) {
+      setResult({ error: err instanceof Error ? err.message : 'Request failed' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const runChatConversationGet = async () => {
+    if (!baseUrl?.trim() || !accessToken?.trim()) {
+      setResult({ error: 'Base URL and access token are required.' });
+      return;
+    }
+    if (!chatConversationId?.trim()) {
+      setResult({ error: 'Enter a conversation ID (UUID).' });
+      return;
+    }
+    setLoading(true);
+    setResult(null);
+    const url = `${apiRoot()}/ai/chat/conversations/${encodeURIComponent(chatConversationId.trim())}`;
+    try {
+      const response = await fetch(url, { headers: getAuthHeaders() });
+      const ct = response.headers.get('content-type');
+      const data = ct?.includes('application/json') ? await response.json().catch(() => ({})) : await response.text();
+      setResult({ status: response.status, data });
+    } catch (err: unknown) {
+      setResult({ error: err instanceof Error ? err.message : 'Request failed' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const runJsonRequest = async (method: 'POST' | 'PATCH', path: string, payload: string) => {
+    if (!baseUrl?.trim() || !accessToken?.trim()) {
+      setResult({ error: 'Base URL and access token are required.' });
+      return;
+    }
+    setLoading(true);
+    setResult(null);
+    const url = `${apiRoot()}${path.startsWith('/') ? path : `/${path}`}`;
+    try {
+      const body = JSON.parse(payload || '{}');
+      const response = await fetch(url, {
+        method,
+        headers: getAuthHeaders(),
+        body: JSON.stringify(body),
+      });
+      const ct = response.headers.get('content-type');
+      const data = ct?.includes('application/json') ? await response.json().catch(() => ({})) : await response.text();
+      setResult({ status: response.status, data: response.ok ? data : { error: data } });
+    } catch (e: unknown) {
+      if (e instanceof SyntaxError) setResult({ error: 'Invalid JSON in request body' });
+      else setResult({ error: e instanceof Error ? e.message : 'Request failed' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const runDeleteRequest = async (path: string) => {
+    if (!baseUrl?.trim() || !accessToken?.trim()) {
+      setResult({ error: 'Base URL and access token are required.' });
+      return;
+    }
+    setLoading(true);
+    setResult(null);
+    const url = `${apiRoot()}${path.startsWith('/') ? path : `/${path}`}`;
+    try {
+      const response = await fetch(url, {
+        method: 'DELETE',
+        headers: getAuthHeaders(true),
+      });
+      const ct = response.headers.get('content-type');
+      const data = ct?.includes('application/json') ? await response.json().catch(() => ({})) : await response.text();
+      setResult({ status: response.status, data: response.ok ? data : { error: data } });
+    } catch (err: unknown) {
+      setResult({ error: err instanceof Error ? err.message : 'Request failed' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const runDocumentDelete = async () => {
+    if (!documentId?.trim()) {
+      setResult({ error: 'Enter a document ID (UUID) above.' });
+      return;
+    }
+    await runDeleteRequest(`/documents/${encodeURIComponent(documentId.trim())}`);
+  };
+
+  const runLessonDelete = async () => {
+    if (!lessonId?.trim()) {
+      setResult({ error: 'Enter a lesson ID (UUID) above.' });
+      return;
+    }
+    await runDeleteRequest(`/lessons/${encodeURIComponent(lessonId.trim())}`);
+  };
+
   const runGeminiKeysGet = async () => {
     if (!baseUrl?.trim() || !accessToken?.trim()) {
       setResult({ error: 'Base URL and access token are required.' });
@@ -478,46 +832,19 @@ export default function EduatorIntegrationPage() {
         <div className="mb-10">
           <h1 className="text-4xl font-extrabold text-slate-100 mb-2">Eduator API Integration</h1>
           <p className="text-slate-400">
-            Local backend: JWT <code className="bg-slate-800 px-1 rounded">Authorization: Bearer</code>, base{' '}
-            <code className="bg-slate-800 px-1 rounded">/v1</code>, camelCase on AI routes. Open{' '}
+            JWT <code className="bg-slate-800 px-1 rounded">Authorization: Bearer</code>, base{' '}
+            <code className="bg-slate-800 px-1 rounded">/v1</code>. AI routes use <strong className="text-slate-300">camelCase</strong>; REST education
+            plan writes use <strong className="text-slate-300">snake_case</strong>. Languages: en, az, tr, ru. Open{' '}
             <a
               href={docsUiUrl()}
               target="_blank"
               rel="noopener noreferrer"
               className="text-indigo-400 hover:text-indigo-300 underline"
             >
-              interactive API docs
+              /v1/docs
             </a>
             .
           </p>
-        </div>
-
-        <div className="mb-10 p-6 rounded-2xl bg-indigo-950/30 border border-indigo-800/50">
-          <h2 className="text-xl font-semibold text-slate-200 mb-4">Quick start</h2>
-          <ol className="list-decimal list-inside space-y-2 text-slate-400">
-            <li>
-              <strong className="text-slate-300">Login</strong> — POST <code className="bg-slate-800 px-1 rounded">/auth/login</code> with{' '}
-              <code className="bg-slate-800 px-1 rounded">email</code> / <code className="bg-slate-800 px-1 rounded">password</code>; use{' '}
-              <code className="bg-slate-800 px-1 rounded">tokens.accessToken</code>.
-            </li>
-            <li>
-              <strong className="text-slate-300">Documents</strong> — POST <code className="bg-slate-800 px-1 rounded">/documents</code> (record:{' '}
-              <code className="bg-slate-800 px-1 rounded">title</code>, <code className="bg-slate-800 px-1 rounded">fileName</code>,{' '}
-              <code className="bg-slate-800 px-1 rounded">fileType</code>, <code className="bg-slate-800 px-1 rounded">fileSize</code>). List GET{' '}
-              <code className="bg-slate-800 px-1 rounded">/documents</code>, file stream GET{' '}
-              <code className="bg-slate-800 px-1 rounded">/documents/:id/file</code>.
-            </li>
-            <li>
-              <strong className="text-slate-300">AI</strong> — POST <code className="bg-slate-800 px-1 rounded">/ai/exams/generate</code>,{' '}
-              <code className="bg-slate-800 px-1 rounded">/ai/lessons/generate</code>,{' '}
-              <code className="bg-slate-800 px-1 rounded">/ai/education-plans/generate</code> with Bearer token.
-            </li>
-            <li>
-              <strong className="text-slate-300">Lessons</strong> — After generation, poll GET{' '}
-              <code className="bg-slate-800 px-1 rounded">/lessons/:id</code> until <code className="bg-slate-800 px-1 rounded">audio_url</code> is set
-              (TTS async).
-            </li>
-          </ol>
         </div>
 
         <div className="space-y-4 mb-8">
@@ -632,9 +959,10 @@ export default function EduatorIntegrationPage() {
             {(
               [
                 ['documents', 'Documents'],
-                ['exam', 'POST /ai/exams/generate'],
-                ['lesson', 'POST /ai/lessons/generate'],
-                ['education', 'POST /ai/education-plans/generate'],
+                ['exam', 'Exams'],
+                ['lesson', 'Lessons'],
+                ['education', 'Education plans'],
+                ['chat', 'AI chat'],
               ] as const
             ).map(([id, label]) => (
               <button
@@ -656,23 +984,41 @@ export default function EduatorIntegrationPage() {
             <div className="p-6 rounded-2xl bg-slate-900/50 border border-slate-700">
               <h3 className="text-slate-200 font-semibold mb-3">POST /documents</h3>
               <p className="text-sm text-slate-400 mb-4">
-                Registers a <strong className="text-slate-300">document record</strong> as JSON (required:{' '}
-                <code className="bg-slate-800 px-1 rounded">title</code>, <code className="bg-slate-800 px-1 rounded">fileName</code>,{' '}
-                <code className="bg-slate-800 px-1 rounded">fileType</code>, <code className="bg-slate-800 px-1 rounded">fileSize</code>). Optional{' '}
-                <code className="bg-slate-800 px-1 rounded">localPath</code> points to a file that must already exist{' '}
-                <em className="text-slate-500">on the API server</em> — this demo does not upload file bytes from your PC. If your backend adds a
-                multipart upload route, call that first, then POST /documents with the returned path or id.
+                JSON body: required <code className="bg-slate-800 px-1 rounded">title</code>,{' '}
+                <code className="bg-slate-800 px-1 rounded">fileName</code>, <code className="bg-slate-800 px-1 rounded">fileType</code>,{' '}
+                <code className="bg-slate-800 px-1 rounded">fileSize</code>. Send file bytes as{' '}
+                <code className="bg-slate-800 px-1 rounded">contentBase64</code> (same as the main web app) or, only when the file already exists on the
+                server, <code className="bg-slate-800 px-1 rounded">localPath</code>.
               </p>
+              <div className="flex flex-wrap items-center gap-3 mb-3">
+                <input
+                  ref={documentFileInputRef}
+                  type="file"
+                  className="block text-sm text-slate-400 file:mr-3 file:rounded-lg file:border-0 file:bg-indigo-600 file:px-4 file:py-2 file:text-sm file:font-medium file:text-white hover:file:bg-indigo-500"
+                  accept=".pdf,.doc,.docx,.txt,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain"
+                  disabled={documentPacking || loading}
+                  onChange={(e) => void handleDocumentFileSelected(e.target.files)}
+                />
+                {documentPacking && <span className="text-sm text-slate-400">Encoding…</span>}
+              </div>
+              {documentPackStatus && <p className="text-sm text-emerald-400/90 mb-3">{documentPackStatus}</p>}
               <textarea
                 value={documentCreatePayload}
-                onChange={(e) => setDocumentCreatePayload(e.target.value)}
-                rows={12}
-                className="w-full px-4 py-3 bg-slate-950 border border-slate-700 rounded-xl text-slate-100 font-mono text-sm mb-4"
+                onChange={(e) => {
+                  setDocumentCreatePayload(e.target.value);
+                  setDocumentPackStatus(null);
+                }}
+                rows={8}
+                className="w-full px-4 py-3 bg-slate-950 border border-slate-700 rounded-xl text-slate-100 font-mono text-sm mb-2"
               />
+              <p className="text-xs text-slate-500 mb-4">
+                After choosing a file, the textarea includes a long <code className="bg-slate-800 px-1 rounded">contentBase64</code> string. Demo limit:{' '}
+                {DOCUMENT_UPLOAD_MAX_BYTES / (1024 * 1024)} MB file size.
+              </p>
               <button
                 type="button"
                 onClick={runDocumentCreate}
-                disabled={loading}
+                disabled={loading || documentPacking}
                 className="px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-xl hover:bg-indigo-700 disabled:opacity-50"
               >
                 {loading ? 'Sending…' : 'Create document'}
@@ -681,8 +1027,14 @@ export default function EduatorIntegrationPage() {
 
             <div className="p-6 rounded-2xl bg-slate-900/50 border border-slate-700">
               <h3 className="text-slate-200 font-semibold mb-3">GET /documents</h3>
-              <p className="text-sm text-slate-400 mb-4">Query: <code className="bg-slate-800 px-1 rounded">page</code>,{' '}
-                <code className="bg-slate-800 px-1 rounded">perPage</code>, <code className="bg-slate-800 px-1 rounded">search</code> (optional).</p>
+              <p className="text-sm text-slate-400 mb-4">
+                Returns <code className="bg-slate-800 px-1 rounded">{'{ "items": [...] }'}</code>. Typical item fields: <code className="bg-slate-800 px-1 rounded">id</code>,{' '}
+                <code className="bg-slate-800 px-1 rounded">title</code>, <code className="bg-slate-800 px-1 rounded">file_name</code>,{' '}
+                <code className="bg-slate-800 px-1 rounded">status</code> (pending / processing / ready / failed), <code className="bg-slate-800 px-1 rounded">content_language</code>,{' '}
+                <code className="bg-slate-800 px-1 rounded">chunk_count</code>, <code className="bg-slate-800 px-1 rounded">quality_status</code>. Query:{' '}
+                <code className="bg-slate-800 px-1 rounded">page</code>, <code className="bg-slate-800 px-1 rounded">perPage</code>, optional{' '}
+                <code className="bg-slate-800 px-1 rounded">search</code>.
+              </p>
               <div className="flex flex-wrap items-center gap-4 mb-4">
                 <label className="flex items-center gap-2 text-slate-400">
                   Page{' '}
@@ -724,8 +1076,11 @@ export default function EduatorIntegrationPage() {
             </div>
 
             <div className="p-6 rounded-2xl bg-slate-900/50 border border-slate-700">
-              <h3 className="text-slate-200 font-semibold mb-3">GET /documents/:id · GET /documents/:id/file</h3>
-              <p className="text-sm text-slate-400 mb-4">Fetch metadata or stream the original file when available.</p>
+              <h3 className="text-slate-200 font-semibold mb-3">GET /documents/:id · GET /documents/:id/file · DELETE /documents/:id</h3>
+              <p className="text-sm text-slate-400 mb-4">
+                GET JSON returns <code className="bg-slate-800 px-1 rounded">{'{ "document": { ... } }'}</code> for one owned document. GET file returns raw
+                bytes (not JSON). DELETE returns <code className="bg-slate-800 px-1 rounded">{'{ "success": true }'}</code> and removes stored file.
+              </p>
               <div className="flex flex-wrap items-center gap-4">
                 <input
                   type="text"
@@ -750,6 +1105,14 @@ export default function EduatorIntegrationPage() {
                 >
                   Get file
                 </button>
+                <button
+                  type="button"
+                  onClick={runDocumentDelete}
+                  disabled={loading || !documentId.trim()}
+                  className="px-6 py-2.5 bg-red-900/50 text-red-200 font-medium rounded-xl hover:bg-red-900/70 disabled:opacity-50 border border-red-800/50"
+                >
+                  Delete
+                </button>
               </div>
             </div>
           </div>
@@ -765,7 +1128,7 @@ export default function EduatorIntegrationPage() {
                 <code className="bg-slate-800 px-1 rounded">title</code>, <code className="bg-slate-800 px-1 rounded">subject</code>,{' '}
                 <code className="bg-slate-800 px-1 rounded">gradeLevel</code>, <code className="bg-slate-800 px-1 rounded">language</code>;{' '}
                 <code className="bg-slate-800 px-1 rounded">questionCount</code> (1–50);{' '}
-                <code className="bg-slate-800 px-1 rounded">questionTypes</code>;{' '}
+                <code className="bg-slate-800 px-1 rounded">questionTypes</code> (e.g. multiple_choice, true_false, short_answer, fill_blank, multiple_select);{' '}
                 <code className="bg-slate-800 px-1 rounded">difficultyDistribution</code> with easy / medium / hard counts.
               </p>
             </div>
@@ -800,6 +1163,105 @@ export default function EduatorIntegrationPage() {
             >
               {loading ? 'Calling API…' : 'Generate exam'}
             </button>
+
+            <div className="mt-10 p-6 rounded-2xl bg-slate-900/50 border border-slate-700">
+              <h3 className="text-slate-200 font-semibold mb-3">Saved exams — GET /exams · GET /exams/stats</h3>
+              <p className="text-sm text-slate-400 mb-4">
+                Persisted exams (camelCase on POST). List uses <code className="bg-slate-800 px-1 rounded">page</code>,{' '}
+                <code className="bg-slate-800 px-1 rounded">perPage</code>, <code className="bg-slate-800 px-1 rounded">search</code>.
+              </p>
+              <div className="flex flex-wrap items-center gap-4 mb-4">
+                <label className="flex items-center gap-2 text-slate-400 text-sm">
+                  Page
+                  <input
+                    type="number"
+                    min={1}
+                    value={examsPage}
+                    onChange={(e) => setExamsPage(Number(e.target.value) || 1)}
+                    className="w-20 px-2 py-1.5 bg-slate-900 border border-slate-700 rounded text-slate-100"
+                  />
+                </label>
+                <label className="flex items-center gap-2 text-slate-400 text-sm">
+                  perPage
+                  <input
+                    type="number"
+                    min={1}
+                    max={100}
+                    value={examsPerPage}
+                    onChange={(e) => setExamsPerPage(Number(e.target.value) || 10)}
+                    className="w-24 px-2 py-1.5 bg-slate-900 border border-slate-700 rounded text-slate-100"
+                  />
+                </label>
+                <input
+                  type="text"
+                  value={examsSearch}
+                  onChange={(e) => setExamsSearch(e.target.value)}
+                  placeholder="search"
+                  className="flex-1 min-w-[140px] px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-slate-100"
+                />
+                <button
+                  type="button"
+                  onClick={runExamsList}
+                  disabled={loading}
+                  className="px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-xl hover:bg-indigo-700 disabled:opacity-50"
+                >
+                  List exams
+                </button>
+                <button
+                  type="button"
+                  onClick={runExamsStats}
+                  disabled={loading}
+                  className="px-6 py-2.5 bg-slate-700 text-white font-medium rounded-xl hover:bg-slate-600 disabled:opacity-50 border border-slate-600"
+                >
+                  Stats
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-6 p-6 rounded-2xl bg-slate-900/50 border border-slate-700">
+              <h3 className="text-slate-200 font-semibold mb-3">GET /exams/:id · POST /exams · DELETE /exams/:id</h3>
+              <p className="text-sm text-slate-400 mb-4">Use the exam UUID from the list or generator response.</p>
+              <div className="flex flex-wrap items-center gap-3 mb-6">
+                <input
+                  type="text"
+                  value={examSavedId}
+                  onChange={(e) => setExamSavedId(e.target.value)}
+                  placeholder="Exam UUID"
+                  className="flex-1 min-w-[200px] px-4 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-slate-100 placeholder-slate-500"
+                />
+                <button
+                  type="button"
+                  onClick={runExamGet}
+                  disabled={loading || !examSavedId.trim()}
+                  className="px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-xl hover:bg-indigo-700 disabled:opacity-50"
+                >
+                  Get exam
+                </button>
+                <button
+                  type="button"
+                  onClick={() => runDeleteRequest(`/exams/${encodeURIComponent(examSavedId.trim())}`)}
+                  disabled={loading || !examSavedId.trim()}
+                  className="px-6 py-2.5 bg-red-900/50 text-red-200 font-medium rounded-xl hover:bg-red-900/70 disabled:opacity-50 border border-red-800/50"
+                >
+                  Delete
+                </button>
+              </div>
+              <label className="block text-sm font-medium text-slate-300 mb-2">POST /exams body (camelCase)</label>
+              <textarea
+                value={examSavePayload}
+                onChange={(e) => setExamSavePayload(e.target.value)}
+                rows={10}
+                className="w-full px-4 py-3 bg-slate-950 border border-slate-700 rounded-xl text-slate-100 font-mono text-sm mb-3"
+              />
+              <button
+                type="button"
+                onClick={() => runJsonRequest('POST', '/exams', examSavePayload)}
+                disabled={loading}
+                className="px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-xl hover:bg-indigo-700 disabled:opacity-50"
+              >
+                Create saved exam
+              </button>
+            </div>
           </>
         )}
 
@@ -889,11 +1351,12 @@ export default function EduatorIntegrationPage() {
             </div>
 
             <div className="mt-6 p-6 rounded-2xl bg-slate-900/50 border border-slate-700">
-              <h3 className="text-slate-200 font-semibold mb-3">GET /lessons/:id</h3>
+              <h3 className="text-slate-200 font-semibold mb-3">GET /lessons/:id · DELETE /lessons/:id</h3>
               <p className="text-sm text-slate-400 mb-4">
                 Full lesson: content, images, <code className="bg-slate-800 px-1 rounded">mini_test</code>,{' '}
                 <code className="bg-slate-800 px-1 rounded">audio_url</code>. If <code className="bg-slate-800 px-1 rounded">audio_url</code> is relative,
-                media may be under GET <code className="bg-slate-800 px-1 rounded">/lessons/:id/media/:file</code>.
+                media may be under GET <code className="bg-slate-800 px-1 rounded">/lessons/:id/media/:file</code>. DELETE returns{' '}
+                <code className="bg-slate-800 px-1 rounded">{'{ "ok": true }'}</code> and removes generated media when possible.
               </p>
               <div className="flex flex-wrap items-center gap-4">
                 <input
@@ -911,6 +1374,14 @@ export default function EduatorIntegrationPage() {
                 >
                   {loading ? 'Loading…' : 'Get lesson'}
                 </button>
+                <button
+                  type="button"
+                  onClick={runLessonDelete}
+                  disabled={loading || !lessonId.trim()}
+                  className="px-6 py-2.5 bg-red-900/50 text-red-200 font-medium rounded-xl hover:bg-red-900/70 disabled:opacity-50 border border-red-800/50"
+                >
+                  Delete lesson
+                </button>
               </div>
             </div>
           </>
@@ -922,11 +1393,14 @@ export default function EduatorIntegrationPage() {
               <h3 className="text-slate-200 font-semibold mb-2">POST /ai/education-plans/generate</h3>
               <p className="text-sm text-slate-400">
                 Required: <code className="bg-slate-800 px-1 rounded">documentId</code>, <code className="bg-slate-800 px-1 rounded">name</code>. Optional:{' '}
-                <code className="bg-slate-800 px-1 rounded">language</code>, <code className="bg-slate-800 px-1 rounded">periodMonths</code>,{' '}
-                <code className="bg-slate-800 px-1 rounded">sessionsPerWeek</code>, <code className="bg-slate-800 px-1 rounded">hoursPerSession</code>.
+                <code className="bg-slate-800 px-1 rounded">language</code> (same as <code className="bg-slate-800 px-1 rounded">outputLanguage</code> — short
+                codes <code className="bg-slate-800 px-1 rounded">az</code>, <code className="bg-slate-800 px-1 rounded">en</code>, etc.),{' '}
+                <code className="bg-slate-800 px-1 rounded">periodMonths</code>, <code className="bg-slate-800 px-1 rounded">sessionsPerWeek</code>,{' '}
+                <code className="bg-slate-800 px-1 rounded">hoursPerSession</code>. Success is often <strong className="text-slate-300">HTTP 201</strong> with{' '}
+                <code className="bg-slate-800 px-1 rounded">{'{ "plan": { "id", "content": [...] } }'}</code>; rows are also persisted server-side.
               </p>
             </div>
-            <label className="block text-sm font-medium text-slate-300 mb-2">Request body (JSON)</label>
+            <label className="block text-sm font-medium text-slate-300 mb-2">Request body (JSON, camelCase)</label>
             <textarea
               value={educationPayload}
               onChange={(e) => setEducationPayload(e.target.value)}
@@ -941,6 +1415,228 @@ export default function EduatorIntegrationPage() {
             >
               {loading ? 'Calling API…' : 'Generate education plan'}
             </button>
+
+            <div className="mt-8 p-6 rounded-2xl bg-slate-900/50 border border-slate-700">
+              <h3 className="text-slate-200 font-semibold mb-3">GET /education-plans</h3>
+              <p className="text-sm text-slate-400 mb-4">
+                Returns <code className="bg-slate-800 px-1 rounded">{'{ "items": [...] }'}</code> with <strong className="text-slate-300">full plan rows</strong>{' '}
+                (including content). Optional query: <code className="bg-slate-800 px-1 rounded">search</code> only — there is no separate GET-by-id; find a plan
+                in <code className="bg-slate-800 px-1 rounded">items</code> by <code className="bg-slate-800 px-1 rounded">id</code>.
+              </p>
+              <div className="flex flex-wrap items-center gap-4">
+                <input
+                  type="text"
+                  value={educationPlansSearch}
+                  onChange={(e) => setEducationPlansSearch(e.target.value)}
+                  placeholder="search (optional)"
+                  className="flex-1 min-w-[200px] px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-slate-100"
+                />
+                <button
+                  type="button"
+                  onClick={runEducationPlansList}
+                  disabled={loading}
+                  className="px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-xl hover:bg-indigo-700 disabled:opacity-50"
+                >
+                  {loading ? 'Loading…' : 'List education plans'}
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-6 p-6 rounded-2xl bg-slate-900/50 border border-slate-700">
+              <h3 className="text-slate-200 font-semibold mb-3">POST /education-plans · PATCH /education-plans/:id · DELETE /education-plans/:id</h3>
+              <p className="text-sm text-slate-400 mb-4">
+                REST writes use <strong className="text-slate-300">snake_case</strong> (e.g. <code className="bg-slate-800 px-1 rounded">period_months</code>,{' '}
+                <code className="bg-slate-800 px-1 rounded">document_ids</code>, <code className="bg-slate-800 px-1 rounded">content</code>).
+              </p>
+              <div className="flex flex-wrap items-center gap-3 mb-4">
+                <input
+                  type="text"
+                  value={educationPlanRestId}
+                  onChange={(e) => setEducationPlanRestId(e.target.value)}
+                  placeholder="Plan UUID (for PATCH / DELETE)"
+                  className="flex-1 min-w-[200px] px-4 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-slate-100 placeholder-slate-500"
+                />
+                <button
+                  type="button"
+                  onClick={() =>
+                    educationPlanRestId.trim()
+                      ? runDeleteRequest(`/education-plans/${encodeURIComponent(educationPlanRestId.trim())}`)
+                      : setResult({ error: 'Enter plan UUID for DELETE.' })
+                  }
+                  disabled={loading || !educationPlanRestId.trim()}
+                  className="px-6 py-2.5 bg-red-900/50 text-red-200 font-medium rounded-xl hover:bg-red-900/70 disabled:opacity-50 border border-red-800/50"
+                >
+                  Delete plan
+                </button>
+              </div>
+              <label className="block text-sm font-medium text-slate-300 mb-2">POST /education-plans</label>
+              <textarea
+                value={educationPlanCreatePayload}
+                onChange={(e) => setEducationPlanCreatePayload(e.target.value)}
+                rows={12}
+                className="w-full px-4 py-3 bg-slate-950 border border-slate-700 rounded-xl text-slate-100 font-mono text-sm mb-3"
+              />
+              <button
+                type="button"
+                onClick={() => runJsonRequest('POST', '/education-plans', educationPlanCreatePayload)}
+                disabled={loading}
+                className="px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-xl hover:bg-indigo-700 disabled:opacity-50 mb-6"
+              >
+                Create plan (REST)
+              </button>
+              <label className="block text-sm font-medium text-slate-300 mb-2">PATCH /education-plans/:id</label>
+              <textarea
+                value={educationPlanPatchPayload}
+                onChange={(e) => setEducationPlanPatchPayload(e.target.value)}
+                rows={6}
+                className="w-full px-4 py-3 bg-slate-950 border border-slate-700 rounded-xl text-slate-100 font-mono text-sm mb-3"
+              />
+              <button
+                type="button"
+                onClick={() =>
+                  educationPlanRestId.trim()
+                    ? runJsonRequest(
+                        'PATCH',
+                        `/education-plans/${encodeURIComponent(educationPlanRestId.trim())}`,
+                        educationPlanPatchPayload,
+                      )
+                    : setResult({ error: 'Enter plan UUID for PATCH.' })
+                }
+                disabled={loading}
+                className="px-6 py-2.5 bg-slate-700 text-white font-medium rounded-xl hover:bg-slate-600 disabled:opacity-50 border border-slate-600"
+              >
+                Patch plan
+              </button>
+            </div>
+          </>
+        )}
+
+        {mainTab === 'chat' && (
+          <>
+            <div className="mt-4 p-4 rounded-xl bg-slate-900/50 border border-slate-700 mb-6">
+              <h3 className="text-slate-200 font-semibold mb-2">AI assistant — /ai/chat/conversations</h3>
+              <p className="text-sm text-slate-400">
+                Owner-scoped threads. Bodies use <strong className="text-slate-300">camelCase</strong>. Up to <strong className="text-slate-300">three</strong>{' '}
+                <code className="bg-slate-800 px-1 rounded">documentIds</code> as RAG context when sending a message.
+              </p>
+            </div>
+
+            <div className="p-6 rounded-2xl bg-slate-900/50 border border-slate-700 mb-6">
+              <h3 className="text-slate-200 font-semibold mb-3">GET /ai/chat/conversations · POST /ai/chat/conversations</h3>
+              <div className="flex flex-wrap gap-3 mb-4">
+                <button
+                  type="button"
+                  onClick={runChatConversationsList}
+                  disabled={loading}
+                  className="px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-xl hover:bg-indigo-700 disabled:opacity-50"
+                >
+                  List conversations
+                </button>
+              </div>
+              <label className="block text-sm font-medium text-slate-300 mb-2">POST body (optional title, documentIds)</label>
+              <textarea
+                value={chatCreatePayload}
+                onChange={(e) => setChatCreatePayload(e.target.value)}
+                rows={8}
+                className="w-full px-4 py-3 bg-slate-950 border border-slate-700 rounded-xl text-slate-100 font-mono text-sm mb-3"
+              />
+              <button
+                type="button"
+                onClick={() => runJsonRequest('POST', '/ai/chat/conversations', chatCreatePayload)}
+                disabled={loading}
+                className="px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-xl hover:bg-indigo-700 disabled:opacity-50"
+              >
+                Create conversation
+              </button>
+            </div>
+
+            <div className="p-6 rounded-2xl bg-slate-900/50 border border-slate-700 mb-6">
+              <h3 className="text-slate-200 font-semibold mb-3">
+                GET /ai/chat/conversations/:id · PATCH · DELETE
+              </h3>
+              <div className="flex flex-wrap items-center gap-3 mb-4">
+                <input
+                  type="text"
+                  value={chatConversationId}
+                  onChange={(e) => setChatConversationId(e.target.value)}
+                  placeholder="Conversation UUID"
+                  className="flex-1 min-w-[200px] px-4 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-slate-100 placeholder-slate-500"
+                />
+                <button
+                  type="button"
+                  onClick={runChatConversationGet}
+                  disabled={loading || !chatConversationId.trim()}
+                  className="px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-xl hover:bg-indigo-700 disabled:opacity-50"
+                >
+                  Get
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    chatConversationId.trim()
+                      ? runDeleteRequest(`/ai/chat/conversations/${encodeURIComponent(chatConversationId.trim())}`)
+                      : setResult({ error: 'Enter conversation UUID.' })
+                  }
+                  disabled={loading || !chatConversationId.trim()}
+                  className="px-6 py-2.5 bg-red-900/50 text-red-200 font-medium rounded-xl hover:bg-red-900/70 disabled:opacity-50 border border-red-800/50"
+                >
+                  Delete
+                </button>
+              </div>
+              <label className="block text-sm font-medium text-slate-300 mb-2">PATCH body</label>
+              <textarea
+                value={chatPatchPayload}
+                onChange={(e) => setChatPatchPayload(e.target.value)}
+                rows={6}
+                className="w-full px-4 py-3 bg-slate-950 border border-slate-700 rounded-xl text-slate-100 font-mono text-sm mb-3"
+              />
+              <button
+                type="button"
+                onClick={() =>
+                  chatConversationId.trim()
+                    ? runJsonRequest(
+                        'PATCH',
+                        `/ai/chat/conversations/${encodeURIComponent(chatConversationId.trim())}`,
+                        chatPatchPayload,
+                      )
+                    : setResult({ error: 'Enter conversation UUID for PATCH.' })
+                }
+                disabled={loading}
+                className="px-6 py-2.5 bg-slate-700 text-white font-medium rounded-xl hover:bg-slate-600 disabled:opacity-50 border border-slate-600"
+              >
+                Patch conversation
+              </button>
+            </div>
+
+            <div className="p-6 rounded-2xl bg-slate-900/50 border border-slate-700">
+              <h3 className="text-slate-200 font-semibold mb-3">POST /ai/chat/conversations/:id/messages</h3>
+              <p className="text-sm text-slate-400 mb-4">
+                Required: <code className="bg-slate-800 px-1 rounded">message</code>. Optional: <code className="bg-slate-800 px-1 rounded">documentIds</code>{' '}
+                (≤3), <code className="bg-slate-800 px-1 rounded">shortAnswer</code> (brief vs detailed style).
+              </p>
+              <textarea
+                value={chatMessagePayload}
+                onChange={(e) => setChatMessagePayload(e.target.value)}
+                rows={10}
+                className="w-full px-4 py-3 bg-slate-950 border border-slate-700 rounded-xl text-slate-100 font-mono text-sm mb-3"
+              />
+              <button
+                type="button"
+                onClick={() =>
+                  chatConversationId.trim()
+                    ? runJsonRequest(
+                        'POST',
+                        `/ai/chat/conversations/${encodeURIComponent(chatConversationId.trim())}/messages`,
+                        chatMessagePayload,
+                      )
+                    : setResult({ error: 'Enter conversation UUID to post a message.' })
+                }
+                disabled={loading}
+                className="px-8 py-4 bg-indigo-600 text-white font-semibold rounded-xl hover:bg-indigo-700 disabled:opacity-50"
+              >
+                Send message
+              </button>
+            </div>
           </>
         )}
 
