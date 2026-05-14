@@ -23,8 +23,8 @@ export default function Home() {
                 Köməkçilər
                 <span className="absolute bottom-0 left-0 w-0 h-0.5 bg-indigo-400 group-hover:w-full transition-all duration-300"></span>
               </a>
-              <a href="/eduspace-integration" className="text-slate-300 hover:text-indigo-300 transition-colors relative group">
-                EduSpace Integration
+              <a href="/eduator-integration" className="text-slate-300 hover:text-indigo-300 transition-colors relative group">
+                Eduator Integration
                 <span className="absolute bottom-0 left-0 w-0 h-0.5 bg-indigo-400 group-hover:w-full transition-all duration-300"></span>
               </a>
               <a href="#how" className="text-slate-300 hover:text-indigo-300 transition-colors relative group">
@@ -207,7 +207,7 @@ export default function Home() {
               <ul className="space-y-2 text-slate-400">
                 <li><a href="#features" className="hover:text-white transition">Xüsusiyyətlər</a></li>
                 <li><a href="#how" className="hover:text-white transition">Necə işləyir</a></li>
-                <li><a href="/eduspace-integration" className="hover:text-white transition">EduSpace Integration</a></li>
+                <li><a href="/eduator-integration" className="hover:text-white transition">Eduator Integration</a></li>
                 <li><a href="#contact" className="hover:text-white transition">Əlaqə</a></li>
               </ul>
             </div>

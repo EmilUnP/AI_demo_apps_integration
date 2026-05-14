@@ -4,6 +4,15 @@ const nextConfig = {
   images: {
     domains: [],
   },
+  async redirects() {
+    return [
+      {
+        source: '/eduspace-integration',
+        destination: '/eduator-integration',
+        permanent: true,
+      },
+    ]
+  },
 }
 
 module.exports = nextConfig

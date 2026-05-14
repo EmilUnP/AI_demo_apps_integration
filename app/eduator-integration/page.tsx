@@ -63,11 +63,11 @@ const LESSON_EXAMPLE_FULL = {
 
 type MainTab = 'documents' | 'exam' | 'lesson';
 
-const TEST_API_KEY = typeof process.env.NEXT_PUBLIC_EDUSPACE_TEST_API_KEY === 'string'
-  ? process.env.NEXT_PUBLIC_EDUSPACE_TEST_API_KEY.trim()
+const TEST_API_KEY = typeof process.env.NEXT_PUBLIC_EDUATOR_TEST_API_KEY === 'string'
+  ? process.env.NEXT_PUBLIC_EDUATOR_TEST_API_KEY.trim()
   : '';
 
-export default function EduSpaceIntegrationPage() {
+export default function EduatorIntegrationPage() {
   const [baseUrl, setBaseUrl] = useState(DEFAULT_BASE_URL);
   const [apiKey, setApiKey] = useState(TEST_API_KEY);
   const [mainTab, setMainTab] = useState<MainTab>('documents');
@@ -87,6 +87,13 @@ export default function EduSpaceIntegrationPage() {
 
   // Documents: get one
   const [documentId, setDocumentId] = useState('');
+
+  // Lessons: list
+  const [lessonsPage, setLessonsPage] = useState(1);
+  const [lessonsPerPage, setLessonsPerPage] = useState(20);
+
+  // Lessons: get one
+  const [lessonId, setLessonId] = useState('');
 
   const normalizeApiKey = (key: string) => {
     const trimmed = key.trim();
@@ -130,7 +137,7 @@ export default function EduSpaceIntegrationPage() {
       const isNetwork = /failed|network|cors|fetch/i.test(msg);
       setResult({
         error: isNetwork
-          ? 'Network error — is the EduSpace API running at the base URL? If this site and the API are on different origins, the API must allow CORS for this origin.'
+          ? 'Network error — is the Eduator API running at the base URL? If this site and the API are on different origins, the API must allow CORS for this origin.'
           : msg,
       });
     } finally {
@@ -212,9 +219,59 @@ export default function EduSpaceIntegrationPage() {
     }
   };
 
+  const runLessonsList = async () => {
+    if (!baseUrl?.trim() || !apiKey?.trim()) {
+      setResult({ error: 'Base URL and API key are required.' });
+      return;
+    }
+    setLoading(true);
+    setResult(null);
+    const url =
+      baseUrl.replace(/\/$/, '') +
+      `/lessons?page=${encodeURIComponent(String(lessonsPage))}&per_page=${encodeURIComponent(
+        String(lessonsPerPage),
+      )}`;
+    try {
+      const response = await fetch(url, { headers: getHeaders() });
+      const contentType = response.headers.get('content-type');
+      const isJson = contentType?.includes('application/json');
+      const data = isJson ? await response.json() : await response.text();
+      setResult({ status: response.status, data });
+    } catch (err: unknown) {
+      setResult({ error: err instanceof Error ? err.message : 'Request failed' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const runLessonGet = async () => {
+    if (!baseUrl?.trim() || !apiKey?.trim()) {
+      setResult({ error: 'Base URL and API key are required.' });
+      return;
+    }
+    if (!lessonId?.trim()) {
+      setResult({ error: 'Enter a lesson ID (UUID).' });
+      return;
+    }
+    setLoading(true);
+    setResult(null);
+    const url = baseUrl.replace(/\/$/, '') + `/lessons/${encodeURIComponent(lessonId.trim())}`;
+    try {
+      const response = await fetch(url, { headers: getHeaders() });
+      const contentType = response.headers.get('content-type');
+      const isJson = contentType?.includes('application/json');
+      const data = isJson ? await response.json() : await response.text();
+      setResult({ status: response.status, data });
+    } catch (err: unknown) {
+      setResult({ error: err instanceof Error ? err.message : 'Request failed' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const runExamOrLesson = async () => {
     if (!baseUrl?.trim()) {
-      setResult({ error: 'Please enter EduSpace API base URL' });
+      setResult({ error: 'Please enter Eduator API base URL' });
       return;
     }
     if (!apiKey?.trim()) {
@@ -281,7 +338,7 @@ export default function EduSpaceIntegrationPage() {
 
       <main className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
         <div className="mb-10">
-          <h1 className="text-4xl font-extrabold text-slate-100 mb-2">EduSpace API Integration</h1>
+          <h1 className="text-4xl font-extrabold text-slate-100 mb-2">Eduator API Integration</h1>
 
         </div>
 
@@ -300,7 +357,7 @@ export default function EduSpaceIntegrationPage() {
         {/* Base URL & API Key */}
         <div className="space-y-4 mb-8">
           <div>
-            <label className="block text-sm font-medium text-slate-300 mb-2">EduSpace API Base URL</label>
+            <label className="block text-sm font-medium text-slate-300 mb-2">Eduator API Base URL</label>
             <input
               type="url"
               value={baseUrl}
@@ -329,15 +386,15 @@ export default function EduSpaceIntegrationPage() {
                 {loading ? 'Checking…' : 'Verify API key'}
               </button>
             </div>
-            <p className="mt-1 text-sm text-slate-500">Calls GET /documents to confirm the key works. If verify succeeds but upload fails, the EduSpace API may not be reading the Authorization header for multipart uploads.</p>
+            <p className="mt-1 text-sm text-slate-500">Calls GET /documents to confirm the key works. If verify succeeds but upload fails, the Eduator API may not be reading the Authorization header for multipart uploads.</p>
             {TEST_API_KEY && <p className="mt-1 text-sm text-indigo-400">Test key from <code className="bg-slate-800 px-1 rounded">.env.local</code> is pre-filled. Click &quot;Verify API key&quot; to test.</p>}
             {keyVerified === true && <p className="mt-1 text-sm text-emerald-400">Key accepted by API.</p>}
             {keyVerified === false && (
               <div className="mt-3 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-sm space-y-2">
                 <p className="font-medium">Key rejected or request failed. Check:</p>
                 <ul className="list-disc list-inside ml-2 space-y-1 text-slate-300">
-                  <li>Is the EduSpace API running at the base URL? (e.g. <code className="bg-slate-800 px-1 rounded">http://https://edu-space-api-server.vercel.app/api/v1/teacher</code>)</li>
-                  <li>Is the key from EduSpace → API Integration and not revoked?</li>
+                  <li>Is the Eduator API running at the base URL? (e.g. <code className="bg-slate-800 px-1 rounded">http://https://edu-space-api-server.vercel.app/api/v1/teacher</code>)</li>
+                  <li>Is the key from Eduator → API Integration and not revoked?</li>
                   </ul>
                 <p className="text-slate-400">See the Response section below for the exact status and error from the API.</p>
               </div>
@@ -506,6 +563,78 @@ export default function EduSpaceIntegrationPage() {
             >
               {loading ? 'Calling API…' : 'Generate lesson'}
             </button>
+
+            <div className="mt-8 p-6 rounded-2xl bg-slate-900/50 border border-slate-700">
+              <h3 className="text-slate-200 font-semibold mb-3">GET /lessons</h3>
+              <p className="text-sm text-slate-400 mb-4">
+                List your lessons (paginated). Query:{' '}
+                <code className="bg-slate-800 px-1 rounded">page</code>,{' '}
+                <code className="bg-slate-800 px-1 rounded">per_page</code>,{' '}
+                <code className="bg-slate-800 px-1 rounded">class_id</code>. Each item includes{' '}
+                <code className="bg-slate-800 px-1 rounded">id</code>,{' '}
+                <code className="bg-slate-800 px-1 rounded">has_images</code>,{' '}
+                <code className="bg-slate-800 px-1 rounded">has_audio</code>.
+              </p>
+              <div className="flex flex-wrap items-center gap-4">
+                <label className="flex items-center gap-2 text-slate-400">
+                  Page
+                  <input
+                    type="number"
+                    min={1}
+                    value={lessonsPage}
+                    onChange={(e) => setLessonsPage(Number(e.target.value) || 1)}
+                    className="w-20 px-2 py-1.5 bg-slate-900 border border-slate-700 rounded text-slate-100"
+                  />
+                </label>
+                <label className="flex items-center gap-2 text-slate-400">
+                  Per page
+                  <input
+                    type="number"
+                    min={1}
+                    max={100}
+                    value={lessonsPerPage}
+                    onChange={(e) => setLessonsPerPage(Number(e.target.value) || 20)}
+                    className="w-24 px-2 py-1.5 bg-slate-900 border border-slate-700 rounded text-slate-100"
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={runLessonsList}
+                  disabled={loading}
+                  className="px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-xl hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {loading ? 'Loading…' : 'List lessons'}
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-6 p-6 rounded-2xl bg-slate-900/50 border border-slate-700">
+              <h3 className="text-slate-200 font-semibold mb-3">GET /lessons/:id</h3>
+              <p className="text-sm text-slate-400 mb-4">
+                Get one lesson by ID with full content,{' '}
+                <code className="bg-slate-800 px-1 rounded">images</code> (array of{' '}
+                <code className="bg-slate-800 px-1 rounded">{'{ url, alt, description }'}</code>) and{' '}
+                <code className="bg-slate-800 px-1 rounded">audio_url</code> (public TTS URL when ready). Use this to
+                display lesson images and play audio in your apps.
+              </p>
+              <div className="flex flex-wrap items-center gap-4">
+                <input
+                  type="text"
+                  value={lessonId}
+                  onChange={(e) => setLessonId(e.target.value)}
+                  placeholder="Lesson UUID"
+                  className="flex-1 min-w-[200px] px-4 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-slate-100 placeholder-slate-500"
+                />
+                <button
+                  type="button"
+                  onClick={runLessonGet}
+                  disabled={loading || !lessonId.trim()}
+                  className="px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-xl hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {loading ? 'Loading…' : 'Get lesson'}
+                </button>
+              </div>
+            </div>
           </>
         )}
 
@@ -515,10 +644,10 @@ export default function EduSpaceIntegrationPage() {
             <h2 className="text-xl font-semibold text-slate-100 mb-4">Response</h2>
             {result.status === 500 && typeof result.data === 'object' && result.data !== null && JSON.stringify(result.data).includes('Authentication failed') && (
               <div className="mb-4 p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-sm space-y-2">
-                <p><strong>Authentication failed</strong> — The EduSpace API rejected the request.</p>
+                <p><strong>Authentication failed</strong> — The Eduator API rejected the request.</p>
                 <ul className="list-disc list-inside ml-2 space-y-1">
-                  <li>Use <strong>Verify API key</strong> above: if it succeeds, the key is valid and the problem is likely that <em>multipart upload</em> on your EduSpace server is not using the same auth — ensure <code className="bg-slate-800 px-1 rounded">/documents/upload</code> reads the <code className="bg-slate-800 px-1 rounded">Authorization</code> header.</li>
-                  <li>If verify also fails: paste only the key (e.g. <code className="bg-slate-800 px-1 rounded">edsk_...</code>), no extra spaces, and copy it again from EduSpace → API Integration.</li>
+                  <li>Use <strong>Verify API key</strong> above: if it succeeds, the key is valid and the problem is likely that <em>multipart upload</em> on your Eduator server is not using the same auth — ensure <code className="bg-slate-800 px-1 rounded">/documents/upload</code> reads the <code className="bg-slate-800 px-1 rounded">Authorization</code> header.</li>
+                  <li>If verify also fails: paste only the key (e.g. <code className="bg-slate-800 px-1 rounded">edsk_...</code>), no extra spaces, and copy it again from Eduator → API Integration.</li>
                 </ul>
               </div>
             )}
