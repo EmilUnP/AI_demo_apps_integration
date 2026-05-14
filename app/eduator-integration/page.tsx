@@ -3,141 +3,211 @@
 import { useState, useRef } from 'react';
 import Link from 'next/link';
 
-const DEFAULT_BASE_URL = 'https://edu-space-api-server.vercel.app/api/v1/teacher';
+const DEFAULT_BASE_URL =
+  typeof process.env.NEXT_PUBLIC_EDUATOR_API_BASE_URL === 'string' &&
+  process.env.NEXT_PUBLIC_EDUATOR_API_BASE_URL.trim()
+    ? process.env.NEXT_PUBLIC_EDUATOR_API_BASE_URL.trim()
+    : 'http://127.0.0.1:4000/v1';
+
+const DEFAULT_ACCESS_TOKEN =
+  typeof process.env.NEXT_PUBLIC_EDUATOR_ACCESS_TOKEN === 'string'
+    ? process.env.NEXT_PUBLIC_EDUATOR_ACCESS_TOKEN.trim()
+    : '';
+
+const DEFAULT_LOGIN_EMAIL =
+  typeof process.env.NEXT_PUBLIC_EDUATOR_LOGIN_EMAIL === 'string'
+    ? process.env.NEXT_PUBLIC_EDUATOR_LOGIN_EMAIL.trim()
+    : '';
+
+const DOCUMENT_CREATE_EXAMPLE = {
+  title: 'Math Chapter 1',
+  fileName: 'chapter-1.pdf',
+  fileType: 'application/pdf',
+  fileSize: 245760,
+  localPath: 'storage/docs/chapter-1.pdf',
+};
 
 const EXAM_WITH_DOCUMENT_ID = {
-  document_id: 'uuid-from-documents-upload',
+  documentId: 'uuid-from-documents',
   title: 'Quiz 1',
   subject: 'Math',
-  grade_level: '10',
-  topics: 'algebra, equations',
+  gradeLevel: '10',
   language: 'en',
-  settings: {
-    question_count: 10,
-    difficulty_distribution: { easy: 30, medium: 50, hard: 20 },
-    question_types: ['multiple_choice', 'true_false'],
-    include_explanations: true,
-    include_hints: true,
-  },
+  questionCount: 10,
+  questionTypes: ['multiple_choice', 'true_false'],
+  difficultyDistribution: { easy: 3, medium: 5, hard: 2 },
 };
 
 const EXAM_WITH_DOCUMENT_TEXT = {
-  document_text: 'Your lesson or chapter text (at least 50 characters). Add more content here to generate better exam questions...',
+  documentText:
+    'Your lesson or chapter text here. Add enough content for the model to generate meaningful questions.',
   title: 'Quiz 1',
   subject: 'Math',
-  grade_level: '10',
+  gradeLevel: '10',
   language: 'en',
-  settings: {
-    question_count: 10,
-    difficulty_distribution: { easy: 30, medium: 50, hard: 20 },
-    question_types: ['multiple_choice', 'true_false'],
-    include_explanations: true,
-    include_hints: true,
-  },
-};
-
-const LESSON_EXAMPLE_TEXT = {
-  document_id: 'uuid-from-documents-upload',
-  topic: 'Introduction to Fractions',
-  include: 'text',
-};
-
-const LESSON_EXAMPLE_IMAGES = {
-  document_id: 'uuid-from-documents-upload',
-  topic: 'Introduction to Fractions',
-  include: 'text_and_images',
-};
-
-const LESSON_EXAMPLE_AUDIO = {
-  document_id: 'uuid-from-documents-upload',
-  topic: 'Introduction to Fractions',
-  include: 'text_and_audio',
+  questionCount: 10,
+  questionTypes: ['multiple_choice', 'true_false'],
+  difficultyDistribution: { easy: 30, medium: 50, hard: 20 },
 };
 
 const LESSON_EXAMPLE_FULL = {
-  document_id: 'uuid-from-documents-upload',
+  documentId: 'uuid-primary-document',
+  documentIds: ['uuid-primary-document', 'uuid-secondary-document'],
   topic: 'Introduction to Fractions',
-  include: 'full',
-  language: 'English',
+  language: 'en',
+  gradeLevel: 'grade_9',
+  objectives: 'Define numerator and denominator\nCompare fractions\nAdd simple fractions',
+  corePrompt: 'Keep explanations practical with real-life examples.',
+  options: {
+    includeImages: true,
+    includeAudio: true,
+    includeTables: true,
+    includeFigures: true,
+    includeCharts: false,
+    contentLength: 'full',
+  },
 };
 
-type MainTab = 'documents' | 'exam' | 'lesson';
+const EDUCATION_PLAN_EXAMPLE = {
+  documentId: 'uuid-from-documents',
+  name: 'Grade 10 Math Plan',
+  language: 'en',
+  periodMonths: 3,
+  sessionsPerWeek: 3,
+  hoursPerSession: 1,
+};
 
-const TEST_API_KEY = typeof process.env.NEXT_PUBLIC_EDUATOR_TEST_API_KEY === 'string'
-  ? process.env.NEXT_PUBLIC_EDUATOR_TEST_API_KEY.trim()
-  : '';
+type MainTab = 'documents' | 'exam' | 'lesson' | 'education';
 
 export default function EduatorIntegrationPage() {
   const [baseUrl, setBaseUrl] = useState(DEFAULT_BASE_URL);
-  const [apiKey, setApiKey] = useState(TEST_API_KEY);
+  const [accessToken, setAccessToken] = useState(DEFAULT_ACCESS_TOKEN);
+  const [loginEmail, setLoginEmail] = useState(DEFAULT_LOGIN_EMAIL);
+  const [loginPassword, setLoginPassword] = useState('');
   const [mainTab, setMainTab] = useState<MainTab>('documents');
+  const [documentCreatePayload, setDocumentCreatePayload] = useState(
+    JSON.stringify(DOCUMENT_CREATE_EXAMPLE, null, 2),
+  );
   const [examPayload, setExamPayload] = useState(JSON.stringify(EXAM_WITH_DOCUMENT_ID, null, 2));
-  const [lessonPayload, setLessonPayload] = useState(JSON.stringify(LESSON_EXAMPLE_TEXT, null, 2));
+  const [lessonPayload, setLessonPayload] = useState(JSON.stringify(LESSON_EXAMPLE_FULL, null, 2));
+  const [educationPayload, setEducationPayload] = useState(
+    JSON.stringify(EDUCATION_PLAN_EXAMPLE, null, 2),
+  );
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{ status?: number; data?: unknown; error?: string } | null>(null);
-  const [keyVerified, setKeyVerified] = useState<boolean | null>(null);
+  const [tokenVerified, setTokenVerified] = useState<boolean | null>(null);
 
-  // Documents: upload
-  const [uploadFile, setUploadFile] = useState<File | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  // Documents: list
   const [listPage, setListPage] = useState(1);
-  const [listPerPage, setListPerPage] = useState(10);
+  const [listPerPage, setListPerPage] = useState(20);
+  const [listSearch, setListSearch] = useState('');
 
-  // Documents: get one
   const [documentId, setDocumentId] = useState('');
 
-  // Lessons: list
   const [lessonsPage, setLessonsPage] = useState(1);
   const [lessonsPerPage, setLessonsPerPage] = useState(20);
+  const [lessonsSearch, setLessonsSearch] = useState('');
 
-  // Lessons: get one
   const [lessonId, setLessonId] = useState('');
 
-  const normalizeApiKey = (key: string) => {
-    const trimmed = key.trim();
+  const docsBaseRef = useRef<string>('');
+
+  const normalizeToken = (token: string) => {
+    const trimmed = token.trim();
     return trimmed.startsWith('Bearer ') ? trimmed.slice(7).trim() : trimmed;
   };
 
-  const getHeaders = (omitContentType = false): Record<string, string> => {
-    const token = normalizeApiKey(apiKey);
+  const getAuthHeaders = (omitContentType = false): Record<string, string> => {
+    const token = normalizeToken(accessToken);
     const h: Record<string, string> = { Authorization: `Bearer ${token}` };
     if (!omitContentType) h['Content-Type'] = 'application/json';
     return h;
   };
 
-  const verifyApiKey = async () => {
-    if (!baseUrl?.trim() || !apiKey?.trim()) {
-      setKeyVerified(false);
-      setResult({ error: 'Enter base URL and API key first.' });
+  const apiRoot = () => baseUrl.replace(/\/$/, '');
+
+  const runLogin = async () => {
+    if (!baseUrl?.trim()) {
+      setResult({ error: 'Enter base URL first.' });
       return;
     }
-    setKeyVerified(null);
+    if (!loginEmail.trim() || !loginPassword) {
+      setResult({ error: 'Enter email and password.' });
+      return;
+    }
     setLoading(true);
     setResult(null);
-    const url = baseUrl.replace(/\/$/, '') + '/documents?page=1&per_page=1';
+    const url = `${apiRoot()}/auth/login`;
     try {
-      const response = await fetch(url, { headers: getHeaders() });
-      const ok = response.status >= 200 && response.status < 300;
-      setKeyVerified(ok);
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: loginEmail.trim(), password: loginPassword }),
+      });
       const contentType = response.headers.get('content-type');
       const isJson = contentType?.includes('application/json');
-      if (ok) {
-        const data = isJson ? await response.json() : await response.text();
-        setResult({ status: response.status, data, error: undefined });
+      const data = isJson ? await response.json() : await response.text();
+      const token =
+        isJson && data && typeof data === 'object'
+          ? (data as { tokens?: { accessToken?: string }; accessToken?: string }).tokens?.accessToken ??
+            (data as { accessToken?: string }).accessToken
+          : undefined;
+      if (response.ok && typeof token === 'string' && token) {
+        setAccessToken(token);
+        setTokenVerified(true);
+        setResult({
+          status: response.status,
+          data: { ...((typeof data === 'object' && data) || {}), tokens: { accessToken: '***saved***' } },
+        });
       } else {
-        const raw = await response.text();
-        const data = isJson ? (() => { try { return JSON.parse(raw); } catch { return { error: raw }; } })() : { error: raw };
-        setResult({ status: response.status, data, error: undefined });
+        setTokenVerified(false);
+        setResult({ status: response.status, data });
       }
     } catch (err: unknown) {
-      setKeyVerified(false);
+      setTokenVerified(false);
+      setResult({ error: err instanceof Error ? err.message : 'Login failed' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const verifyAccessToken = async () => {
+    if (!baseUrl?.trim() || !accessToken?.trim()) {
+      setTokenVerified(false);
+      setResult({ error: 'Enter base URL and access token first.' });
+      return;
+    }
+    setTokenVerified(null);
+    setLoading(true);
+    setResult(null);
+    const q = new URLSearchParams({ page: '1', perPage: '1' });
+    const url = `${apiRoot()}/documents?${q.toString()}`;
+    try {
+      const response = await fetch(url, { headers: getAuthHeaders() });
+      const ok = response.status >= 200 && response.status < 300;
+      setTokenVerified(ok);
+      const raw = await response.text();
+      if (ok) {
+        setResult({ status: response.status, data: { ok: true } });
+        return;
+      }
+      const contentType = response.headers.get('content-type');
+      const isJson = contentType?.includes('application/json');
+      let data: unknown = raw.length > 1200 ? `${raw.slice(0, 1200)}…` : raw;
+      if (isJson) {
+        try {
+          data = JSON.parse(raw);
+        } catch {
+          /* keep truncated text */
+        }
+      }
+      setResult({ status: response.status, data, error: undefined });
+    } catch (err: unknown) {
+      setTokenVerified(false);
       const msg = err instanceof Error ? err.message : 'Request failed';
       const isNetwork = /failed|network|cors|fetch/i.test(msg);
       setResult({
         error: isNetwork
-          ? 'Network error — is the Eduator API running at the base URL? If this site and the API are on different origins, the API must allow CORS for this origin.'
+          ? 'Network error — is the API running? For browser calls, the backend must allow CORS for this origin.'
           : msg,
       });
     } finally {
@@ -145,49 +215,47 @@ export default function EduatorIntegrationPage() {
     }
   };
 
-  const runDocumentsUpload = async () => {
-    if (!baseUrl?.trim() || !apiKey?.trim()) {
-      setResult({ error: 'Base URL and API key are required.' });
-      return;
-    }
-    if (!uploadFile) {
-      setResult({ error: 'Choose a file (PDF, text, or markdown). Max 50MB.' });
+  const runDocumentCreate = async () => {
+    if (!baseUrl?.trim() || !accessToken?.trim()) {
+      setResult({ error: 'Base URL and access token are required.' });
       return;
     }
     setLoading(true);
     setResult(null);
-    const url = baseUrl.replace(/\/$/, '') + '/documents/upload';
-    const token = normalizeApiKey(apiKey);
+    const url = `${apiRoot()}/documents`;
     try {
-      const form = new FormData();
-      form.append('file', uploadFile);
+      const body = JSON.parse(documentCreatePayload || '{}');
       const response = await fetch(url, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-        body: form,
+        headers: getAuthHeaders(),
+        body: JSON.stringify(body),
       });
-      const data = response.ok
-        ? await response.json()
-        : { error: await response.text() };
+      const data = response.ok ? await response.json().catch(() => ({})) : { error: await response.text() };
       setResult({ status: response.status, data });
     } catch (err: unknown) {
-      setResult({ error: err instanceof Error ? err.message : 'Upload failed' });
+      if (err instanceof SyntaxError) setResult({ error: 'Invalid JSON in document body' });
+      else setResult({ error: err instanceof Error ? err.message : 'Request failed' });
     } finally {
       setLoading(false);
     }
   };
 
   const runDocumentsList = async () => {
-    if (!baseUrl?.trim() || !apiKey?.trim()) {
-      setResult({ error: 'Base URL and API key are required.' });
+    if (!baseUrl?.trim() || !accessToken?.trim()) {
+      setResult({ error: 'Base URL and access token are required.' });
       return;
     }
     setLoading(true);
     setResult(null);
-    const url = baseUrl.replace(/\/$/, '') + `/documents?page=${listPage}&per_page=${listPerPage}`;
+    const q = new URLSearchParams({
+      page: String(listPage),
+      perPage: String(listPerPage),
+    });
+    if (listSearch.trim()) q.set('search', listSearch.trim());
+    const url = `${apiRoot()}/documents?${q.toString()}`;
     try {
-      const response = await fetch(url, { headers: getHeaders() });
-      const data = response.ok ? await response.json() : { error: await response.text() };
+      const response = await fetch(url, { headers: getAuthHeaders() });
+      const data = response.ok ? await response.json().catch(() => ({})) : { error: await response.text() };
       setResult({ status: response.status, data });
     } catch (err: unknown) {
       setResult({ error: err instanceof Error ? err.message : 'Request failed' });
@@ -197,8 +265,8 @@ export default function EduatorIntegrationPage() {
   };
 
   const runDocumentsGet = async () => {
-    if (!baseUrl?.trim() || !apiKey?.trim()) {
-      setResult({ error: 'Base URL and API key are required.' });
+    if (!baseUrl?.trim() || !accessToken?.trim()) {
+      setResult({ error: 'Base URL and access token are required.' });
       return;
     }
     if (!documentId?.trim()) {
@@ -207,10 +275,10 @@ export default function EduatorIntegrationPage() {
     }
     setLoading(true);
     setResult(null);
-    const url = baseUrl.replace(/\/$/, '') + `/documents/${encodeURIComponent(documentId.trim())}`;
+    const url = `${apiRoot()}/documents/${encodeURIComponent(documentId.trim())}`;
     try {
-      const response = await fetch(url, { headers: getHeaders() });
-      const data = response.ok ? await response.json() : { error: await response.text() };
+      const response = await fetch(url, { headers: getAuthHeaders() });
+      const data = response.ok ? await response.json().catch(() => ({})) : { error: await response.text() };
       setResult({ status: response.status, data });
     } catch (err: unknown) {
       setResult({ error: err instanceof Error ? err.message : 'Request failed' });
@@ -219,23 +287,68 @@ export default function EduatorIntegrationPage() {
     }
   };
 
-  const runLessonsList = async () => {
-    if (!baseUrl?.trim() || !apiKey?.trim()) {
-      setResult({ error: 'Base URL and API key are required.' });
+  const runDocumentsGetFile = async () => {
+    if (!baseUrl?.trim() || !accessToken?.trim()) {
+      setResult({ error: 'Base URL and access token are required.' });
+      return;
+    }
+    if (!documentId?.trim()) {
+      setResult({ error: 'Enter a document ID (UUID).' });
       return;
     }
     setLoading(true);
     setResult(null);
-    const url =
-      baseUrl.replace(/\/$/, '') +
-      `/lessons?page=${encodeURIComponent(String(lessonsPage))}&per_page=${encodeURIComponent(
-        String(lessonsPerPage),
-      )}`;
+    const url = `${apiRoot()}/documents/${encodeURIComponent(documentId.trim())}/file`;
     try {
-      const response = await fetch(url, { headers: getHeaders() });
+      const response = await fetch(url, { headers: { Authorization: `Bearer ${normalizeToken(accessToken)}` } });
+      const ct = response.headers.get('content-type') ?? '';
+      if (!response.ok) {
+        setResult({ status: response.status, data: { error: await response.text() } });
+        return;
+      }
+      const blob = await response.blob();
+      if (blob.size && (ct.startsWith('text/') || ct.includes('json'))) {
+        const text = await blob.text();
+        setResult({ status: response.status, data: { contentType: ct, size: blob.size, preview: text.slice(0, 4000) } });
+      } else {
+        const objectUrl = URL.createObjectURL(blob);
+        if (docsBaseRef.current) URL.revokeObjectURL(docsBaseRef.current);
+        docsBaseRef.current = objectUrl;
+        setResult({
+          status: response.status,
+          data: {
+            contentType: ct,
+            size: blob.size,
+            downloadUrl: objectUrl,
+            hint: 'Open downloadUrl in a new tab or use it as <a href> to download the stream.',
+          },
+        });
+      }
+    } catch (err: unknown) {
+      setResult({ error: err instanceof Error ? err.message : 'Request failed' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const runLessonsList = async () => {
+    if (!baseUrl?.trim() || !accessToken?.trim()) {
+      setResult({ error: 'Base URL and access token are required.' });
+      return;
+    }
+    setLoading(true);
+    setResult(null);
+    const q = new URLSearchParams({
+      page: String(lessonsPage),
+      perPage: String(lessonsPerPage),
+    });
+    if (lessonsSearch.trim()) q.set('search', lessonsSearch.trim());
+    const url = `${apiRoot()}/lessons?${q.toString()}`;
+    try {
+      const response = await fetch(url, { headers: getAuthHeaders() });
       const contentType = response.headers.get('content-type');
       const isJson = contentType?.includes('application/json');
-      const data = isJson ? await response.json() : await response.text();
+      const data = isJson ? await response.json().catch(() => ({})) : await response.text();
       setResult({ status: response.status, data });
     } catch (err: unknown) {
       setResult({ error: err instanceof Error ? err.message : 'Request failed' });
@@ -245,8 +358,8 @@ export default function EduatorIntegrationPage() {
   };
 
   const runLessonGet = async () => {
-    if (!baseUrl?.trim() || !apiKey?.trim()) {
-      setResult({ error: 'Base URL and API key are required.' });
+    if (!baseUrl?.trim() || !accessToken?.trim()) {
+      setResult({ error: 'Base URL and access token are required.' });
       return;
     }
     if (!lessonId?.trim()) {
@@ -255,12 +368,12 @@ export default function EduatorIntegrationPage() {
     }
     setLoading(true);
     setResult(null);
-    const url = baseUrl.replace(/\/$/, '') + `/lessons/${encodeURIComponent(lessonId.trim())}`;
+    const url = `${apiRoot()}/lessons/${encodeURIComponent(lessonId.trim())}`;
     try {
-      const response = await fetch(url, { headers: getHeaders() });
+      const response = await fetch(url, { headers: getAuthHeaders() });
       const contentType = response.headers.get('content-type');
       const isJson = contentType?.includes('application/json');
-      const data = isJson ? await response.json() : await response.text();
+      const data = isJson ? await response.json().catch(() => ({})) : await response.text();
       setResult({ status: response.status, data });
     } catch (err: unknown) {
       setResult({ error: err instanceof Error ? err.message : 'Request failed' });
@@ -269,53 +382,72 @@ export default function EduatorIntegrationPage() {
     }
   };
 
-  const runExamOrLesson = async () => {
-    if (!baseUrl?.trim()) {
-      setResult({ error: 'Please enter Eduator API base URL' });
+  const runGeminiKeysGet = async () => {
+    if (!baseUrl?.trim() || !accessToken?.trim()) {
+      setResult({ error: 'Base URL and access token are required.' });
       return;
     }
-    if (!apiKey?.trim()) {
-      setResult({ error: 'API key is required. Use Authorization: Bearer YOUR_API_KEY.' });
-      return;
-    }
-
     setLoading(true);
     setResult(null);
+    const url = `${apiRoot()}/users/me/ai-keys/gemini`;
+    try {
+      const response = await fetch(url, { headers: getAuthHeaders() });
+      const data = response.ok ? await response.json().catch(() => ({})) : { error: await response.text() };
+      setResult({ status: response.status, data });
+    } catch (err: unknown) {
+      setResult({ error: err instanceof Error ? err.message : 'Request failed' });
+    } finally {
+      setLoading(false);
+    }
+  };
 
-    const path = mainTab === 'exam' ? '/exams/generate' : '/lessons/generate';
-    const fullUrl = baseUrl.replace(/\/$/, '') + path;
-    const payload = mainTab === 'exam' ? examPayload : lessonPayload;
-
+  const runAiPost = async (path: string, payload: string) => {
+    if (!baseUrl?.trim()) {
+      setResult({ error: 'Please enter API base URL' });
+      return;
+    }
+    if (!accessToken?.trim()) {
+      setResult({ error: 'JWT access token is required (login or paste Bearer token).' });
+      return;
+    }
+    setLoading(true);
+    setResult(null);
+    const fullUrl = `${apiRoot()}${path}`;
     try {
       const body = JSON.parse(payload || '{}');
       const response = await fetch(fullUrl, {
         method: 'POST',
-        headers: getHeaders(),
+        headers: getAuthHeaders(),
         body: JSON.stringify(body),
       });
-
       const contentType = response.headers.get('content-type');
       let data: unknown;
       if (contentType?.includes('application/json')) {
-        data = await response.json();
+        data = await response.json().catch(() => ({}));
       } else {
         data = await response.text();
       }
-
       setResult({
         status: response.status,
         data: response.ok ? data : { error: data },
       });
     } catch (e) {
-      if (e instanceof SyntaxError) {
-        setResult({ error: 'Invalid JSON in request body' });
-      } else {
+      if (e instanceof SyntaxError) setResult({ error: 'Invalid JSON in request body' });
+      else
         setResult({
           error: e instanceof Error ? e.message : 'Request failed (check CORS if calling from another origin)',
         });
-      }
     } finally {
       setLoading(false);
+    }
+  };
+
+  const docsUiUrl = () => {
+    try {
+      const u = new URL(apiRoot());
+      return `${u.origin}/v1/docs`;
+    } catch {
+      return `${apiRoot()}/docs`;
     }
   };
 
@@ -328,9 +460,15 @@ export default function EduatorIntegrationPage() {
               Demo Səhifə
             </Link>
             <div className="flex gap-6 items-center">
-              <Link href="/" className="text-slate-300 hover:text-indigo-300 transition-colors">Ana səhifə</Link>
-              <Link href="/assistants" className="text-slate-300 hover:text-indigo-300 transition-colors">Köməkçilər</Link>
-              <Link href="/test-api" className="text-slate-300 hover:text-indigo-300 transition-colors">Test API</Link>
+              <Link href="/" className="text-slate-300 hover:text-indigo-300 transition-colors">
+                Ana səhifə
+              </Link>
+              <Link href="/assistants" className="text-slate-300 hover:text-indigo-300 transition-colors">
+                Köməkçilər
+              </Link>
+              <Link href="/test-api" className="text-slate-300 hover:text-indigo-300 transition-colors">
+                Test API
+              </Link>
             </div>
           </div>
         </nav>
@@ -339,138 +477,246 @@ export default function EduatorIntegrationPage() {
       <main className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
         <div className="mb-10">
           <h1 className="text-4xl font-extrabold text-slate-100 mb-2">Eduator API Integration</h1>
-
+          <p className="text-slate-400">
+            Local backend: JWT <code className="bg-slate-800 px-1 rounded">Authorization: Bearer</code>, base{' '}
+            <code className="bg-slate-800 px-1 rounded">/v1</code>, camelCase on AI routes. Open{' '}
+            <a
+              href={docsUiUrl()}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-indigo-400 hover:text-indigo-300 underline"
+            >
+              interactive API docs
+            </a>
+            .
+          </p>
         </div>
 
-        {/* Recommended flow */}
         <div className="mb-10 p-6 rounded-2xl bg-indigo-950/30 border border-indigo-800/50">
-          <h2 className="text-xl font-semibold text-slate-200 mb-4">Recommended: Document flow (upload → RAG → exams & lessons)</h2>
+          <h2 className="text-xl font-semibold text-slate-200 mb-4">Quick start</h2>
           <ol className="list-decimal list-inside space-y-2 text-slate-400">
-            <li><strong className="text-slate-300">Upload</strong> — POST /documents/upload with your PDF/text/markdown file (multipart). You get <code className="bg-slate-800 px-1 rounded">document_id</code> and <code className="bg-slate-800 px-1 rounded">processing_status</code>: &quot;processing&quot;.</li>
-            <li><strong className="text-slate-300">Wait for RAG</strong> — Poll GET /documents/:id until <code className="bg-slate-800 px-1 rounded">processing_status</code> is completed. Then the document is ready for exam/lesson generation.</li>
-            <li><strong className="text-slate-300">Exams</strong> — Call POST /exams/generate with <code className="bg-slate-800 px-1 rounded">document_id</code> (or <code className="bg-slate-800 px-1 rounded">document_ids</code>). The API uses RAG to pull relevant content and generate questions.</li>
-            <li><strong className="text-slate-300">Lessons</strong> — Call POST /lessons/generate with <code className="bg-slate-800 px-1 rounded">document_id</code> and <code className="bg-slate-800 px-1 rounded">topic</code>. Same RAG-based generation as in the app.</li>
+            <li>
+              <strong className="text-slate-300">Login</strong> — POST <code className="bg-slate-800 px-1 rounded">/auth/login</code> with{' '}
+              <code className="bg-slate-800 px-1 rounded">email</code> / <code className="bg-slate-800 px-1 rounded">password</code>; use{' '}
+              <code className="bg-slate-800 px-1 rounded">tokens.accessToken</code>.
+            </li>
+            <li>
+              <strong className="text-slate-300">Documents</strong> — POST <code className="bg-slate-800 px-1 rounded">/documents</code> (record:{' '}
+              <code className="bg-slate-800 px-1 rounded">title</code>, <code className="bg-slate-800 px-1 rounded">fileName</code>,{' '}
+              <code className="bg-slate-800 px-1 rounded">fileType</code>, <code className="bg-slate-800 px-1 rounded">fileSize</code>). List GET{' '}
+              <code className="bg-slate-800 px-1 rounded">/documents</code>, file stream GET{' '}
+              <code className="bg-slate-800 px-1 rounded">/documents/:id/file</code>.
+            </li>
+            <li>
+              <strong className="text-slate-300">AI</strong> — POST <code className="bg-slate-800 px-1 rounded">/ai/exams/generate</code>,{' '}
+              <code className="bg-slate-800 px-1 rounded">/ai/lessons/generate</code>,{' '}
+              <code className="bg-slate-800 px-1 rounded">/ai/education-plans/generate</code> with Bearer token.
+            </li>
+            <li>
+              <strong className="text-slate-300">Lessons</strong> — After generation, poll GET{' '}
+              <code className="bg-slate-800 px-1 rounded">/lessons/:id</code> until <code className="bg-slate-800 px-1 rounded">audio_url</code> is set
+              (TTS async).
+            </li>
           </ol>
-          <p className="mt-3 text-sm text-slate-500">You can also send raw <code className="bg-slate-800 px-1 rounded">document_text</code> for exams if you prefer not to upload files.</p>
         </div>
 
-        {/* Base URL & API Key */}
         <div className="space-y-4 mb-8">
           <div>
-            <label className="block text-sm font-medium text-slate-300 mb-2">Eduator API Base URL</label>
+            <label className="block text-sm font-medium text-slate-300 mb-2">API base URL</label>
             <input
               type="url"
               value={baseUrl}
               onChange={(e) => setBaseUrl(e.target.value)}
               className="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-              placeholder="https://edu-space-api-server.vercel.app/api/v1/teacher"
+              placeholder="http://127.0.0.1:4000/v1"
             />
-            <p className="mt-1 text-sm text-slate-500">Use your Vercel URL when deployed (e.g. https://your-app.vercel.app/api/v1/teacher).</p>
+            <p className="mt-1 text-sm text-slate-500">
+              Override with <code className="bg-slate-800 px-1 rounded">NEXT_PUBLIC_EDUATOR_API_BASE_URL</code> in{' '}
+              <code className="bg-slate-800 px-1 rounded">.env.local</code>.
+            </p>
           </div>
+
+          <div className="p-6 rounded-2xl bg-slate-900/50 border border-slate-700 space-y-4">
+            <h3 className="text-slate-200 font-semibold">Login (JWT)</h3>
+            <div className="grid sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm text-slate-400 mb-1">Email</label>
+                <input
+                  type="email"
+                  value={loginEmail}
+                  onChange={(e) => setLoginEmail(e.target.value)}
+                  className="w-full px-4 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-slate-100"
+                  placeholder="admin@example.com"
+                  autoComplete="username"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-slate-400 mb-1">Password</label>
+                <input
+                  type="password"
+                  value={loginPassword}
+                  onChange={(e) => setLoginPassword(e.target.value)}
+                  className="w-full px-4 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-slate-100"
+                  placeholder="••••••••"
+                  autoComplete="current-password"
+                />
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={runLogin}
+              disabled={loading}
+              className="px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-xl hover:bg-indigo-700 disabled:opacity-50"
+            >
+              {loading ? 'Signing in…' : 'POST /auth/login'}
+            </button>
+            <p className="text-xs text-slate-500">
+              Password is not read from env (avoid exposing secrets in the browser bundle). Optionally set{' '}
+              <code className="bg-slate-800 px-1 rounded">NEXT_PUBLIC_EDUATOR_LOGIN_EMAIL</code> to pre-fill email only.
+            </p>
+          </div>
+
           <div>
-            <label className="block text-sm font-medium text-slate-300 mb-2">API Key <span className="text-amber-400">(required)</span></label>
+            <label className="block text-sm font-medium text-slate-300 mb-2">
+              Access token (JWT) <span className="text-amber-400">(required for protected routes)</span>
+            </label>
             <div className="flex gap-3 items-center flex-wrap">
               <input
                 type="password"
-                value={apiKey}
-                onChange={(e) => { setApiKey(e.target.value); setKeyVerified(null); }}
+                value={accessToken}
+                onChange={(e) => {
+                  setAccessToken(e.target.value);
+                  setTokenVerified(null);
+                }}
                 className="flex-1 min-w-[200px] px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                placeholder="Paste key only (e.g. edsk_...)"
+                placeholder="Paste access token (or login above)"
               />
               <button
                 type="button"
-                onClick={verifyApiKey}
-                disabled={loading || !apiKey.trim()}
+                onClick={verifyAccessToken}
+                disabled={loading || !accessToken.trim()}
                 className="px-4 py-3 bg-slate-700 text-slate-200 font-medium rounded-xl hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed border border-slate-600"
               >
-                {loading ? 'Checking…' : 'Verify API key'}
+                {loading ? 'Checking…' : 'Verify token'}
               </button>
             </div>
-            <p className="mt-1 text-sm text-slate-500">Calls GET /documents to confirm the key works. If verify succeeds but upload fails, the Eduator API may not be reading the Authorization header for multipart uploads.</p>
-            {TEST_API_KEY && <p className="mt-1 text-sm text-indigo-400">Test key from <code className="bg-slate-800 px-1 rounded">.env.local</code> is pre-filled. Click &quot;Verify API key&quot; to test.</p>}
-            {keyVerified === true && <p className="mt-1 text-sm text-emerald-400">Key accepted by API.</p>}
-            {keyVerified === false && (
-              <div className="mt-3 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-sm space-y-2">
-                <p className="font-medium">Key rejected or request failed. Check:</p>
-                <ul className="list-disc list-inside ml-2 space-y-1 text-slate-300">
-                  <li>Is the Eduator API running at the base URL? (e.g. <code className="bg-slate-800 px-1 rounded">http://https://edu-space-api-server.vercel.app/api/v1/teacher</code>)</li>
-                  <li>Is the key from Eduator → API Integration and not revoked?</li>
-                  </ul>
-                <p className="text-slate-400">See the Response section below for the exact status and error from the API.</p>
-              </div>
+            <p className="mt-1 text-sm text-slate-500">
+              Verify calls GET <code className="bg-slate-800 px-1 rounded">/documents?page=1&amp;perPage=1</code> and only shows{' '}
+              <code className="bg-slate-800 px-1 rounded">{'{ "ok": true }'}</code> when it succeeds. Pre-fill token:{' '}
+              <code className="bg-slate-800 px-1 rounded">NEXT_PUBLIC_EDUATOR_ACCESS_TOKEN</code> in{' '}
+              <code className="bg-slate-800 px-1 rounded">.env.local</code>.
+            </p>
+            {DEFAULT_ACCESS_TOKEN && (
+              <p className="mt-1 text-sm text-indigo-400">Token from env was pre-filled. Use Verify or call an endpoint.</p>
+            )}
+            {tokenVerified === true && <p className="mt-1 text-sm text-emerald-400">Token accepted.</p>}
+            {tokenVerified === false && (
+              <p className="mt-1 text-sm text-amber-300">Token rejected or request failed — see Response below.</p>
             )}
           </div>
-        </div>
 
-        {/* Main tabs: Documents | Exam | Lesson */}
-        <div className="mb-6">
-          <div className="flex gap-2 border-b border-slate-700 pb-2">
+          <div className="flex flex-wrap gap-2">
             <button
               type="button"
-              onClick={() => setMainTab('documents')}
-              className={`px-4 py-2 rounded-t-lg font-medium transition-colors ${mainTab === 'documents' ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-slate-200'}`}
+              onClick={runGeminiKeysGet}
+              disabled={loading || !accessToken.trim()}
+              className="px-4 py-2 rounded-xl bg-slate-800 text-slate-200 border border-slate-600 hover:bg-slate-700 disabled:opacity-50 text-sm"
             >
-              Documents (upload & list)
-            </button>
-            <button
-              type="button"
-              onClick={() => setMainTab('exam')}
-              className={`px-4 py-2 rounded-t-lg font-medium transition-colors ${mainTab === 'exam' ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-slate-200'}`}
-            >
-              POST /exams/generate
-            </button>
-            <button
-              type="button"
-              onClick={() => setMainTab('lesson')}
-              className={`px-4 py-2 rounded-t-lg font-medium transition-colors ${mainTab === 'lesson' ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-slate-200'}`}
-            >
-              POST /lessons/generate
+              GET /users/me/ai-keys/gemini
             </button>
           </div>
         </div>
 
-        {/* Documents tab */}
+        <div className="mb-6">
+          <div className="flex flex-wrap gap-2 border-b border-slate-700 pb-2">
+            {(
+              [
+                ['documents', 'Documents'],
+                ['exam', 'POST /ai/exams/generate'],
+                ['lesson', 'POST /ai/lessons/generate'],
+                ['education', 'POST /ai/education-plans/generate'],
+              ] as const
+            ).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setMainTab(id)}
+                className={`px-4 py-2 rounded-t-lg font-medium transition-colors ${
+                  mainTab === id ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
         {mainTab === 'documents' && (
           <div className="space-y-8">
-            <p className="text-slate-400">Upload PDF, text, or markdown; the API stores the file and runs RAG processing in the background. Use the returned <code className="bg-slate-800 px-1 rounded">document_id</code> in exam and lesson generation. Max 50MB.</p>
-
             <div className="p-6 rounded-2xl bg-slate-900/50 border border-slate-700">
-              <h3 className="text-slate-200 font-semibold mb-3">POST /documents/upload</h3>
-              <p className="text-sm text-slate-400 mb-4">Send a file as multipart/form-data (field name: <code className="bg-slate-800 px-1 rounded">file</code>). Response includes <code className="bg-slate-800 px-1 rounded">document_id</code> and <code className="bg-slate-800 px-1 rounded">processing_status</code>.</p>
-              <div className="flex flex-wrap items-center gap-4">
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".pdf,.txt,.md,text/plain,text/markdown,application/pdf"
-                  onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)}
-                  className="text-slate-300 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:bg-indigo-600 file:text-white file:font-medium"
-                />
-                <button
-                  type="button"
-                  onClick={runDocumentsUpload}
-                  disabled={loading || !uploadFile}
-                  className="px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-xl hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {loading ? 'Uploading…' : 'Upload'}
-                </button>
-              </div>
+              <h3 className="text-slate-200 font-semibold mb-3">POST /documents</h3>
+              <p className="text-sm text-slate-400 mb-4">
+                Registers a <strong className="text-slate-300">document record</strong> as JSON (required:{' '}
+                <code className="bg-slate-800 px-1 rounded">title</code>, <code className="bg-slate-800 px-1 rounded">fileName</code>,{' '}
+                <code className="bg-slate-800 px-1 rounded">fileType</code>, <code className="bg-slate-800 px-1 rounded">fileSize</code>). Optional{' '}
+                <code className="bg-slate-800 px-1 rounded">localPath</code> points to a file that must already exist{' '}
+                <em className="text-slate-500">on the API server</em> — this demo does not upload file bytes from your PC. If your backend adds a
+                multipart upload route, call that first, then POST /documents with the returned path or id.
+              </p>
+              <textarea
+                value={documentCreatePayload}
+                onChange={(e) => setDocumentCreatePayload(e.target.value)}
+                rows={12}
+                className="w-full px-4 py-3 bg-slate-950 border border-slate-700 rounded-xl text-slate-100 font-mono text-sm mb-4"
+              />
+              <button
+                type="button"
+                onClick={runDocumentCreate}
+                disabled={loading}
+                className="px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-xl hover:bg-indigo-700 disabled:opacity-50"
+              >
+                {loading ? 'Sending…' : 'Create document'}
+              </button>
             </div>
 
             <div className="p-6 rounded-2xl bg-slate-900/50 border border-slate-700">
               <h3 className="text-slate-200 font-semibold mb-3">GET /documents</h3>
-              <p className="text-sm text-slate-400 mb-4">List your documents (paginated). Query: <code className="bg-slate-800 px-1 rounded">page</code>, <code className="bg-slate-800 px-1 rounded">per_page</code>. Use each item’s <code className="bg-slate-800 px-1 rounded">id</code> as <code className="bg-slate-800 px-1 rounded">document_id</code> in exams/lessons.</p>
-              <div className="flex flex-wrap items-center gap-4">
+              <p className="text-sm text-slate-400 mb-4">Query: <code className="bg-slate-800 px-1 rounded">page</code>,{' '}
+                <code className="bg-slate-800 px-1 rounded">perPage</code>, <code className="bg-slate-800 px-1 rounded">search</code> (optional).</p>
+              <div className="flex flex-wrap items-center gap-4 mb-4">
                 <label className="flex items-center gap-2 text-slate-400">
-                  Page <input type="number" min={1} value={listPage} onChange={(e) => setListPage(Number(e.target.value))} className="w-20 px-2 py-1.5 bg-slate-900 border border-slate-700 rounded text-slate-100" />
+                  Page{' '}
+                  <input
+                    type="number"
+                    min={1}
+                    value={listPage}
+                    onChange={(e) => setListPage(Number(e.target.value))}
+                    className="w-20 px-2 py-1.5 bg-slate-900 border border-slate-700 rounded text-slate-100"
+                  />
                 </label>
                 <label className="flex items-center gap-2 text-slate-400">
-                  Per page <input type="number" min={1} max={100} value={listPerPage} onChange={(e) => setListPerPage(Number(e.target.value))} className="w-20 px-2 py-1.5 bg-slate-900 border border-slate-700 rounded text-slate-100" />
+                  perPage{' '}
+                  <input
+                    type="number"
+                    min={1}
+                    max={100}
+                    value={listPerPage}
+                    onChange={(e) => setListPerPage(Number(e.target.value))}
+                    className="w-20 px-2 py-1.5 bg-slate-900 border border-slate-700 rounded text-slate-100"
+                  />
                 </label>
+                <input
+                  type="text"
+                  value={listSearch}
+                  onChange={(e) => setListSearch(e.target.value)}
+                  placeholder="search (optional)"
+                  className="flex-1 min-w-[160px] px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-slate-100"
+                />
                 <button
                   type="button"
                   onClick={runDocumentsList}
                   disabled={loading}
-                  className="px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-xl hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-xl hover:bg-indigo-700 disabled:opacity-50"
                 >
                   {loading ? 'Loading…' : 'List documents'}
                 </button>
@@ -478,8 +724,8 @@ export default function EduatorIntegrationPage() {
             </div>
 
             <div className="p-6 rounded-2xl bg-slate-900/50 border border-slate-700">
-              <h3 className="text-slate-200 font-semibold mb-3">GET /documents/:id</h3>
-              <p className="text-sm text-slate-400 mb-4">Get one document. Check <code className="bg-slate-800 px-1 rounded">processing_status</code> (e.g. completed) before using the document in exam/lesson generation.</p>
+              <h3 className="text-slate-200 font-semibold mb-3">GET /documents/:id · GET /documents/:id/file</h3>
+              <p className="text-sm text-slate-400 mb-4">Fetch metadata or stream the original file when available.</p>
               <div className="flex flex-wrap items-center gap-4">
                 <input
                   type="text"
@@ -492,27 +738,52 @@ export default function EduatorIntegrationPage() {
                   type="button"
                   onClick={runDocumentsGet}
                   disabled={loading || !documentId.trim()}
-                  className="px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-xl hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-xl hover:bg-indigo-700 disabled:opacity-50"
                 >
-                  {loading ? 'Loading…' : 'Get document'}
+                  Get JSON
+                </button>
+                <button
+                  type="button"
+                  onClick={runDocumentsGetFile}
+                  disabled={loading || !documentId.trim()}
+                  className="px-6 py-2.5 bg-slate-700 text-white font-medium rounded-xl hover:bg-slate-600 disabled:opacity-50 border border-slate-600"
+                >
+                  Get file
                 </button>
               </div>
             </div>
           </div>
         )}
 
-        {/* Exam tab */}
         {mainTab === 'exam' && (
           <>
             <div className="mt-4 p-4 rounded-xl bg-slate-900/50 border border-slate-700 mb-6">
-              <h3 className="text-slate-200 font-semibold mb-2">Generate new exam</h3>
+              <h3 className="text-slate-200 font-semibold mb-2">POST /ai/exams/generate</h3>
               <p className="text-sm text-slate-400">
-                Use <code className="bg-slate-800 px-1 rounded">document_id</code> or <code className="bg-slate-800 px-1 rounded">document_ids</code> (RAG) or <code className="bg-slate-800 px-1 rounded">document_text</code> (raw text, 50–100,000 chars). Document must be processed. Optional: title, subject, grade_level, topics, language (en, es, fr, de, pt, it, zh, ja, ko, ar, hi, ru, az, tr), custom_instructions, settings (question_count 1–50, difficulty_distribution, question_types, include_explanations, include_hints).
+                Body uses camelCase: <code className="bg-slate-800 px-1 rounded">documentId</code>,{' '}
+                <code className="bg-slate-800 px-1 rounded">documentIds</code>, or <code className="bg-slate-800 px-1 rounded">documentText</code>;{' '}
+                <code className="bg-slate-800 px-1 rounded">title</code>, <code className="bg-slate-800 px-1 rounded">subject</code>,{' '}
+                <code className="bg-slate-800 px-1 rounded">gradeLevel</code>, <code className="bg-slate-800 px-1 rounded">language</code>;{' '}
+                <code className="bg-slate-800 px-1 rounded">questionCount</code> (1–50);{' '}
+                <code className="bg-slate-800 px-1 rounded">questionTypes</code>;{' '}
+                <code className="bg-slate-800 px-1 rounded">difficultyDistribution</code> with easy / medium / hard counts.
               </p>
             </div>
-            <div className="mb-4 flex gap-2">
-              <button type="button" onClick={() => setExamPayload(JSON.stringify(EXAM_WITH_DOCUMENT_ID, null, 2))} className="text-sm px-3 py-1.5 rounded-lg bg-slate-700 text-slate-300 hover:bg-slate-600">Use document_id (RAG)</button>
-              <button type="button" onClick={() => setExamPayload(JSON.stringify(EXAM_WITH_DOCUMENT_TEXT, null, 2))} className="text-sm px-3 py-1.5 rounded-lg bg-slate-700 text-slate-300 hover:bg-slate-600">Use document_text (raw)</button>
+            <div className="mb-4 flex gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={() => setExamPayload(JSON.stringify(EXAM_WITH_DOCUMENT_ID, null, 2))}
+                className="text-sm px-3 py-1.5 rounded-lg bg-slate-700 text-slate-300 hover:bg-slate-600"
+              >
+                documentId
+              </button>
+              <button
+                type="button"
+                onClick={() => setExamPayload(JSON.stringify(EXAM_WITH_DOCUMENT_TEXT, null, 2))}
+                className="text-sm px-3 py-1.5 rounded-lg bg-slate-700 text-slate-300 hover:bg-slate-600"
+              >
+                documentText
+              </button>
             </div>
             <label className="block text-sm font-medium text-slate-300 mb-2">Request body (JSON)</label>
             <textarea
@@ -522,44 +793,51 @@ export default function EduatorIntegrationPage() {
               className="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-slate-100 font-mono text-sm mb-6 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
             />
             <button
-              onClick={runExamOrLesson}
+              type="button"
+              onClick={() => runAiPost('/ai/exams/generate', examPayload)}
               disabled={loading}
-              className="px-8 py-4 bg-indigo-600 text-white font-semibold rounded-xl hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-indigo-500/25"
+              className="px-8 py-4 bg-indigo-600 text-white font-semibold rounded-xl hover:bg-indigo-700 disabled:opacity-50 shadow-lg shadow-indigo-500/25"
             >
               {loading ? 'Calling API…' : 'Generate exam'}
             </button>
           </>
         )}
 
-        {/* Lesson tab */}
         {mainTab === 'lesson' && (
           <>
             <div className="mt-4 p-4 rounded-xl bg-slate-900/50 border border-slate-700 mb-6">
-              <h3 className="text-slate-200 font-semibold mb-2">Generate new lesson</h3>
+              <h3 className="text-slate-200 font-semibold mb-2">POST /ai/lessons/generate</h3>
               <p className="text-sm text-slate-400 mb-2">
-                Use a <code className="bg-slate-800 px-1 rounded">document_id</code> (from upload or GET /documents) and a <code className="bg-slate-800 px-1 rounded">topic</code>; choose content via <code className="bg-slate-800 px-1 rounded">include</code>. Required: document_id (UUID), topic.
-              </p>
-              <p className="text-sm text-slate-400">
-                Optional: <code className="bg-slate-800 px-1 rounded">language</code> (e.g. English, Azərbaycan, Русский, Türkçe, Deutsch, Français, Español, العربية). <code className="bg-slate-800 px-1 rounded">include</code>: &quot;text&quot; (default), &quot;text_and_images&quot;, &quot;text_and_audio&quot;, &quot;full&quot; (images + audio). <code className="bg-slate-800 px-1 rounded">options</code>: includeImages, includeAudio (override include if set), centerText (default: true).
+                Required: <code className="bg-slate-800 px-1 rounded">topic</code>. Optional:{' '}
+                <code className="bg-slate-800 px-1 rounded">documentId</code>, <code className="bg-slate-800 px-1 rounded">documentIds</code>,{' '}
+                <code className="bg-slate-800 px-1 rounded">language</code> (en, az, tr, ru), <code className="bg-slate-800 px-1 rounded">gradeLevel</code>,{' '}
+                <code className="bg-slate-800 px-1 rounded">objectives</code>, <code className="bg-slate-800 px-1 rounded">corePrompt</code>,{' '}
+                <code className="bg-slate-800 px-1 rounded">options</code> (includeImages, includeAudio, contentLength, …).{' '}
+                <code className="bg-slate-800 px-1 rounded">audio_url</code> may be null until TTS finishes — poll GET{' '}
+                <code className="bg-slate-800 px-1 rounded">/lessons/:id</code>.
               </p>
             </div>
-            <div className="mb-4 flex flex-wrap gap-2">
-              <button type="button" onClick={() => setLessonPayload(JSON.stringify(LESSON_EXAMPLE_TEXT, null, 2))} className="text-sm px-3 py-1.5 rounded-lg bg-slate-700 text-slate-300 hover:bg-slate-600">Text only</button>
-              <button type="button" onClick={() => setLessonPayload(JSON.stringify(LESSON_EXAMPLE_IMAGES, null, 2))} className="text-sm px-3 py-1.5 rounded-lg bg-slate-700 text-slate-300 hover:bg-slate-600">With images</button>
-              <button type="button" onClick={() => setLessonPayload(JSON.stringify(LESSON_EXAMPLE_AUDIO, null, 2))} className="text-sm px-3 py-1.5 rounded-lg bg-slate-700 text-slate-300 hover:bg-slate-600">With audio</button>
-              <button type="button" onClick={() => setLessonPayload(JSON.stringify(LESSON_EXAMPLE_FULL, null, 2))} className="text-sm px-3 py-1.5 rounded-lg bg-slate-700 text-slate-300 hover:bg-slate-600">Full (images + audio)</button>
+            <div className="mb-4">
+              <button
+                type="button"
+                onClick={() => setLessonPayload(JSON.stringify(LESSON_EXAMPLE_FULL, null, 2))}
+                className="text-sm px-3 py-1.5 rounded-lg bg-slate-700 text-slate-300 hover:bg-slate-600"
+              >
+                Reset to full example
+              </button>
             </div>
             <label className="block text-sm font-medium text-slate-300 mb-2">Request body (JSON)</label>
             <textarea
               value={lessonPayload}
               onChange={(e) => setLessonPayload(e.target.value)}
-              rows={12}
+              rows={22}
               className="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-slate-100 font-mono text-sm mb-6 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
             />
             <button
-              onClick={runExamOrLesson}
+              type="button"
+              onClick={() => runAiPost('/ai/lessons/generate', lessonPayload)}
               disabled={loading}
-              className="px-8 py-4 bg-indigo-600 text-white font-semibold rounded-xl hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-indigo-500/25"
+              className="px-8 py-4 bg-indigo-600 text-white font-semibold rounded-xl hover:bg-indigo-700 disabled:opacity-50 shadow-lg shadow-indigo-500/25"
             >
               {loading ? 'Calling API…' : 'Generate lesson'}
             </button>
@@ -567,13 +845,8 @@ export default function EduatorIntegrationPage() {
             <div className="mt-8 p-6 rounded-2xl bg-slate-900/50 border border-slate-700">
               <h3 className="text-slate-200 font-semibold mb-3">GET /lessons</h3>
               <p className="text-sm text-slate-400 mb-4">
-                List your lessons (paginated). Query:{' '}
-                <code className="bg-slate-800 px-1 rounded">page</code>,{' '}
-                <code className="bg-slate-800 px-1 rounded">per_page</code>,{' '}
-                <code className="bg-slate-800 px-1 rounded">class_id</code>. Each item includes{' '}
-                <code className="bg-slate-800 px-1 rounded">id</code>,{' '}
-                <code className="bg-slate-800 px-1 rounded">has_images</code>,{' '}
-                <code className="bg-slate-800 px-1 rounded">has_audio</code>.
+                Query: <code className="bg-slate-800 px-1 rounded">page</code>, <code className="bg-slate-800 px-1 rounded">perPage</code>,{' '}
+                <code className="bg-slate-800 px-1 rounded">search</code>.
               </p>
               <div className="flex flex-wrap items-center gap-4">
                 <label className="flex items-center gap-2 text-slate-400">
@@ -587,7 +860,7 @@ export default function EduatorIntegrationPage() {
                   />
                 </label>
                 <label className="flex items-center gap-2 text-slate-400">
-                  Per page
+                  perPage
                   <input
                     type="number"
                     min={1}
@@ -597,11 +870,18 @@ export default function EduatorIntegrationPage() {
                     className="w-24 px-2 py-1.5 bg-slate-900 border border-slate-700 rounded text-slate-100"
                   />
                 </label>
+                <input
+                  type="text"
+                  value={lessonsSearch}
+                  onChange={(e) => setLessonsSearch(e.target.value)}
+                  placeholder="search"
+                  className="flex-1 min-w-[140px] px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-slate-100"
+                />
                 <button
                   type="button"
                   onClick={runLessonsList}
                   disabled={loading}
-                  className="px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-xl hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-xl hover:bg-indigo-700 disabled:opacity-50"
                 >
                   {loading ? 'Loading…' : 'List lessons'}
                 </button>
@@ -611,11 +891,9 @@ export default function EduatorIntegrationPage() {
             <div className="mt-6 p-6 rounded-2xl bg-slate-900/50 border border-slate-700">
               <h3 className="text-slate-200 font-semibold mb-3">GET /lessons/:id</h3>
               <p className="text-sm text-slate-400 mb-4">
-                Get one lesson by ID with full content,{' '}
-                <code className="bg-slate-800 px-1 rounded">images</code> (array of{' '}
-                <code className="bg-slate-800 px-1 rounded">{'{ url, alt, description }'}</code>) and{' '}
-                <code className="bg-slate-800 px-1 rounded">audio_url</code> (public TTS URL when ready). Use this to
-                display lesson images and play audio in your apps.
+                Full lesson: content, images, <code className="bg-slate-800 px-1 rounded">mini_test</code>,{' '}
+                <code className="bg-slate-800 px-1 rounded">audio_url</code>. If <code className="bg-slate-800 px-1 rounded">audio_url</code> is relative,
+                media may be under GET <code className="bg-slate-800 px-1 rounded">/lessons/:id/media/:file</code>.
               </p>
               <div className="flex flex-wrap items-center gap-4">
                 <input
@@ -629,7 +907,7 @@ export default function EduatorIntegrationPage() {
                   type="button"
                   onClick={runLessonGet}
                   disabled={loading || !lessonId.trim()}
-                  className="px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-xl hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-xl hover:bg-indigo-700 disabled:opacity-50"
                 >
                   {loading ? 'Loading…' : 'Get lesson'}
                 </button>
@@ -638,19 +916,37 @@ export default function EduatorIntegrationPage() {
           </>
         )}
 
-        {/* Shared response area */}
+        {mainTab === 'education' && (
+          <>
+            <div className="mt-4 p-4 rounded-xl bg-slate-900/50 border border-slate-700 mb-6">
+              <h3 className="text-slate-200 font-semibold mb-2">POST /ai/education-plans/generate</h3>
+              <p className="text-sm text-slate-400">
+                Required: <code className="bg-slate-800 px-1 rounded">documentId</code>, <code className="bg-slate-800 px-1 rounded">name</code>. Optional:{' '}
+                <code className="bg-slate-800 px-1 rounded">language</code>, <code className="bg-slate-800 px-1 rounded">periodMonths</code>,{' '}
+                <code className="bg-slate-800 px-1 rounded">sessionsPerWeek</code>, <code className="bg-slate-800 px-1 rounded">hoursPerSession</code>.
+              </p>
+            </div>
+            <label className="block text-sm font-medium text-slate-300 mb-2">Request body (JSON)</label>
+            <textarea
+              value={educationPayload}
+              onChange={(e) => setEducationPayload(e.target.value)}
+              rows={14}
+              className="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-slate-100 font-mono text-sm mb-6"
+            />
+            <button
+              type="button"
+              onClick={() => runAiPost('/ai/education-plans/generate', educationPayload)}
+              disabled={loading}
+              className="px-8 py-4 bg-indigo-600 text-white font-semibold rounded-xl hover:bg-indigo-700 disabled:opacity-50 shadow-lg shadow-indigo-500/25"
+            >
+              {loading ? 'Calling API…' : 'Generate education plan'}
+            </button>
+          </>
+        )}
+
         {result && (
           <div className="mt-10 p-6 rounded-2xl border bg-slate-900/80 border-slate-700">
             <h2 className="text-xl font-semibold text-slate-100 mb-4">Response</h2>
-            {result.status === 500 && typeof result.data === 'object' && result.data !== null && JSON.stringify(result.data).includes('Authentication failed') && (
-              <div className="mb-4 p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 text-sm space-y-2">
-                <p><strong>Authentication failed</strong> — The Eduator API rejected the request.</p>
-                <ul className="list-disc list-inside ml-2 space-y-1">
-                  <li>Use <strong>Verify API key</strong> above: if it succeeds, the key is valid and the problem is likely that <em>multipart upload</em> on your Eduator server is not using the same auth — ensure <code className="bg-slate-800 px-1 rounded">/documents/upload</code> reads the <code className="bg-slate-800 px-1 rounded">Authorization</code> header.</li>
-                  <li>If verify also fails: paste only the key (e.g. <code className="bg-slate-800 px-1 rounded">edsk_...</code>), no extra spaces, and copy it again from Eduator → API Integration.</li>
-                </ul>
-              </div>
-            )}
             {result.error ? (
               <div className="p-4 rounded-xl bg-red-500/10 border border-red-500/30 text-red-300">{result.error}</div>
             ) : (
@@ -658,17 +954,18 @@ export default function EduatorIntegrationPage() {
                 {result.status != null && (
                   <div className="mb-4">
                     <span className="text-slate-400">Status: </span>
-                    <span className={result.status >= 200 && result.status < 300 ? 'text-emerald-400' : 'text-amber-400'}>{result.status}</span>
+                    <span className={result.status >= 200 && result.status < 300 ? 'text-emerald-400' : 'text-amber-400'}>
+                      {result.status}
+                    </span>
                   </div>
                 )}
-                <pre className="p-4 rounded-xl bg-slate-950 border border-slate-700 text-slate-300 text-sm overflow-auto max-h-96 font-mono">
+                <pre className="p-4 rounded-xl bg-slate-950 border border-slate-700 text-slate-300 text-sm overflow-auto max-h-96 font-mono whitespace-pre-wrap break-words">
                   {JSON.stringify(result.data, null, 2)}
                 </pre>
               </>
             )}
           </div>
         )}
-
       </main>
     </div>
   );
