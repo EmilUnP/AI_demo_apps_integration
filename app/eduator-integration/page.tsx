@@ -16,8 +16,8 @@ const readEnvApiKey = (): string => {
       : '';
   if (primary) return primary;
   const legacy =
-    typeof process.env.NEXT_PUBLIC_EDUATOR_API_KEY === 'string'
-      ? process.env.NEXT_PUBLIC_EDUATOR_API_KEY.trim()
+    typeof process.env.NEXT_PUBLIC_EDUATOR_ACCESS_TOKEN === 'string'
+      ? process.env.NEXT_PUBLIC_EDUATOR_ACCESS_TOKEN.trim()
       : '';
   return legacy;
 };
@@ -132,6 +132,10 @@ const EXAM_SAVE_POST_EXAMPLE = {
 };
 
 const CHAT_CONVERSATION_POST_EXAMPLE = {
+  title: 'My tutor',
+};
+
+const CHAT_CONVERSATION_WITH_DOCS_EXAMPLE = {
   title: 'Lesson prep',
   documentIds: ['DOCUMENT_UUID'],
 };
@@ -141,10 +145,28 @@ const CHAT_PATCH_EXAMPLE = {
   documentIds: ['DOCUMENT_UUID'],
 };
 
-const CHAT_MESSAGE_POST_EXAMPLE = {
+/** Plain text tutor chat — no document RAG. */
+const CHAT_MESSAGE_PLAIN_EXAMPLE = {
+  message: 'Hello',
+  documentIds: [] as string[],
+  shortAnswer: true,
+};
+
+const CHAT_MESSAGE_WITH_RAG_EXAMPLE = {
   message: 'Summarize the key ideas for my next class.',
   documentIds: ['DOCUMENT_UUID'],
   shortAnswer: false,
+};
+
+const pickChatConversationId = (data: unknown): string | undefined => {
+  if (!data || typeof data !== 'object') return undefined;
+  const d = data as Record<string, unknown>;
+  const conv = d.conversation;
+  if (conv && typeof conv === 'object' && typeof (conv as { id?: unknown }).id === 'string') {
+    return (conv as { id: string }).id;
+  }
+  if (typeof d.id === 'string') return d.id;
+  return undefined;
 };
 
 type MainTab = 'documents' | 'exam' | 'lesson' | 'education' | 'chat';
@@ -192,7 +214,7 @@ export default function EduatorIntegrationPage() {
   const [chatConversationId, setChatConversationId] = useState('');
   const [chatCreatePayload, setChatCreatePayload] = useState(JSON.stringify(CHAT_CONVERSATION_POST_EXAMPLE, null, 2));
   const [chatPatchPayload, setChatPatchPayload] = useState(JSON.stringify(CHAT_PATCH_EXAMPLE, null, 2));
-  const [chatMessagePayload, setChatMessagePayload] = useState(JSON.stringify(CHAT_MESSAGE_POST_EXAMPLE, null, 2));
+  const [chatMessagePayload, setChatMessagePayload] = useState(JSON.stringify(CHAT_MESSAGE_PLAIN_EXAMPLE, null, 2));
 
   const docsBaseRef = useRef<string>('');
   const documentFileInputRef = useRef<HTMLInputElement>(null);
@@ -599,6 +621,41 @@ export default function EduatorIntegrationPage() {
       setResult({ status: response.status, data });
     } catch (err: unknown) {
       setResult({ error: err instanceof Error ? err.message : 'Request failed' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const runChatConversationCreate = async () => {
+    if (!baseUrl?.trim() || !apiKey?.trim()) {
+      setResult({ error: 'Base URL and API key are required.' });
+      return;
+    }
+    setLoading(true);
+    setResult(null);
+    const url = `${apiRoot()}/ai/chat/conversations`;
+    try {
+      const body = JSON.parse(chatCreatePayload || '{}');
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify(body),
+      });
+      const ct = response.headers.get('content-type');
+      const data = ct?.includes('application/json') ? await response.json().catch(() => ({})) : await response.text();
+      if (response.ok) {
+        const newId = pickChatConversationId(data);
+        if (newId) setChatConversationId(newId);
+        setResult({
+          status: response.status,
+          data: newId ? { ...(typeof data === 'object' && data ? data : {}), _hint: `conversation.id saved above: ${newId}` } : data,
+        });
+      } else {
+        setResult({ status: response.status, data: { error: data } });
+      }
+    } catch (e: unknown) {
+      if (e instanceof SyntaxError) setResult({ error: 'Invalid JSON in create body' });
+      else setResult({ error: e instanceof Error ? e.message : 'Request failed' });
     } finally {
       setLoading(false);
     }
@@ -1409,38 +1466,131 @@ export default function EduatorIntegrationPage() {
           <>
             <div className="mt-4 p-4 rounded-xl bg-slate-900/50 border border-slate-700 mb-6">
               <h3 className="text-slate-200 font-semibold mb-2">AI assistant — /ai/chat/conversations</h3>
+              <p className="text-sm text-slate-400 mb-3">
+                Owner-scoped threads. Bodies use <strong className="text-slate-300">camelCase</strong>:{' '}
+                <code className="bg-slate-800 px-1 rounded">documentIds</code>, <code className="bg-slate-800 px-1 rounded">shortAnswer</code>. Up to{' '}
+                <strong className="text-slate-300">three</strong> document UUIDs per message for RAG; use{' '}
+                <code className="bg-slate-800 px-1 rounded">documentIds: []</code> for plain text only.
+              </p>
               <p className="text-sm text-slate-400">
-                Owner-scoped threads. Bodies use <strong className="text-slate-300">camelCase</strong>. Up to <strong className="text-slate-300">three</strong>{' '}
-                <code className="bg-slate-800 px-1 rounded">documentIds</code> as RAG context when sending a message.
+                Requires a Gemini API key on this account (Eduator → Gemini Key) or{' '}
+                <code className="bg-slate-800 px-1 rounded">GOOGLE_GEMINI_API_KEY</code> on the server. Backend needs migration{' '}
+                <code className="bg-slate-800 px-1 rounded">008_teacher_chat.sql</code> (<code className="bg-slate-800 px-1 rounded">db:migrate</code>).
               </p>
             </div>
 
-            <div className="p-6 rounded-2xl bg-slate-900/50 border border-slate-700 mb-6">
-              <h3 className="text-slate-200 font-semibold mb-3">GET /ai/chat/conversations · POST /ai/chat/conversations</h3>
-              <div className="flex flex-wrap gap-3 mb-4">
-                <button
-                  type="button"
-                  onClick={runChatConversationsList}
-                  disabled={loading}
-                  className="px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-xl hover:bg-indigo-700 disabled:opacity-50"
-                >
-                  List conversations
-                </button>
-              </div>
-              <label className="block text-sm font-medium text-slate-300 mb-2">POST body (optional title, documentIds)</label>
+            <div className="p-6 rounded-2xl bg-indigo-950/20 border border-indigo-800/40 mb-6">
+              <h3 className="text-slate-200 font-semibold mb-2">Simple tutor chat (3 steps)</h3>
+              <ol className="list-decimal list-inside space-y-2 text-sm text-slate-400 mb-4">
+                <li>
+                  <strong className="text-slate-300">Create</strong> a conversation → copy{' '}
+                  <code className="bg-slate-800 px-1 rounded">conversation.id</code> (auto-filled below after create).
+                </li>
+                <li>
+                  <strong className="text-slate-300">Send messages</strong> with the same conversation id; prior messages in the thread are included
+                  automatically.
+                </li>
+                <li>
+                  Keep chatting — <code className="bg-slate-800 px-1 rounded">documentIds: []</code> for plain text, or up to 3 UUIDs for document RAG.
+                </li>
+              </ol>
+              <label className="block text-sm font-medium text-slate-300 mb-2">Step 1 — POST body (optional title, documentIds)</label>
               <textarea
                 value={chatCreatePayload}
                 onChange={(e) => setChatCreatePayload(e.target.value)}
-                rows={8}
+                rows={5}
                 className="w-full px-4 py-3 bg-slate-950 border border-slate-700 rounded-xl text-slate-100 font-mono text-sm mb-3"
               />
+              <div className="flex flex-wrap gap-2 mb-3">
+                <button
+                  type="button"
+                  onClick={() => setChatCreatePayload(JSON.stringify(CHAT_CONVERSATION_POST_EXAMPLE, null, 2))}
+                  className="px-3 py-1.5 text-xs bg-slate-800 text-slate-300 rounded-lg hover:bg-slate-700 border border-slate-600"
+                >
+                  Example: plain tutor
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setChatCreatePayload(JSON.stringify(CHAT_CONVERSATION_WITH_DOCS_EXAMPLE, null, 2))}
+                  className="px-3 py-1.5 text-xs bg-slate-800 text-slate-300 rounded-lg hover:bg-slate-700 border border-slate-600"
+                >
+                  Example: with documentIds
+                </button>
+              </div>
               <button
                 type="button"
-                onClick={() => runJsonRequest('POST', '/ai/chat/conversations', chatCreatePayload)}
+                onClick={runChatConversationCreate}
                 disabled={loading}
                 className="px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-xl hover:bg-indigo-700 disabled:opacity-50"
               >
                 Create conversation
+              </button>
+            </div>
+
+            <div className="p-6 rounded-2xl bg-slate-900/50 border border-slate-700 mb-6">
+              <h3 className="text-slate-200 font-semibold mb-3">Step 2 — POST /ai/chat/conversations/:id/messages</h3>
+              <p className="text-sm text-slate-400 mb-3">
+                Required: <code className="bg-slate-800 px-1 rounded">message</code>. Optional:{' '}
+                <code className="bg-slate-800 px-1 rounded">documentIds</code> (≤3 for RAG),{' '}
+                <code className="bg-slate-800 px-1 rounded">shortAnswer</code> (brief vs detailed).
+              </p>
+              <label className="block text-sm font-medium text-slate-300 mb-2">Conversation UUID</label>
+              <input
+                type="text"
+                value={chatConversationId}
+                onChange={(e) => setChatConversationId(e.target.value)}
+                placeholder="Filled automatically after create, or paste conversation.id"
+                className="w-full px-4 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-slate-100 placeholder-slate-500 mb-4"
+              />
+              <textarea
+                value={chatMessagePayload}
+                onChange={(e) => setChatMessagePayload(e.target.value)}
+                rows={8}
+                className="w-full px-4 py-3 bg-slate-950 border border-slate-700 rounded-xl text-slate-100 font-mono text-sm mb-3"
+              />
+              <div className="flex flex-wrap gap-2 mb-3">
+                <button
+                  type="button"
+                  onClick={() => setChatMessagePayload(JSON.stringify(CHAT_MESSAGE_PLAIN_EXAMPLE, null, 2))}
+                  className="px-3 py-1.5 text-xs bg-slate-800 text-slate-300 rounded-lg hover:bg-slate-700 border border-slate-600"
+                >
+                  Example: plain text (documentIds: [])
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setChatMessagePayload(JSON.stringify(CHAT_MESSAGE_WITH_RAG_EXAMPLE, null, 2))}
+                  className="px-3 py-1.5 text-xs bg-slate-800 text-slate-300 rounded-lg hover:bg-slate-700 border border-slate-600"
+                >
+                  Example: with document RAG
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  chatConversationId.trim()
+                    ? runJsonRequest(
+                        'POST',
+                        `/ai/chat/conversations/${encodeURIComponent(chatConversationId.trim())}/messages`,
+                        chatMessagePayload,
+                      )
+                    : setResult({ error: 'Create a conversation first (Step 1) or paste conversation.id.' })
+                }
+                disabled={loading}
+                className="px-8 py-4 bg-indigo-600 text-white font-semibold rounded-xl hover:bg-indigo-700 disabled:opacity-50"
+              >
+                Send message
+              </button>
+            </div>
+
+            <div className="p-6 rounded-2xl bg-slate-900/50 border border-slate-700 mb-6">
+              <h3 className="text-slate-200 font-semibold mb-3">GET /ai/chat/conversations · list</h3>
+              <button
+                type="button"
+                onClick={runChatConversationsList}
+                disabled={loading}
+                className="px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-xl hover:bg-indigo-700 disabled:opacity-50"
+              >
+                List conversations
               </button>
             </div>
 
@@ -1499,36 +1649,6 @@ export default function EduatorIntegrationPage() {
                 className="px-6 py-2.5 bg-slate-700 text-white font-medium rounded-xl hover:bg-slate-600 disabled:opacity-50 border border-slate-600"
               >
                 Patch conversation
-              </button>
-            </div>
-
-            <div className="p-6 rounded-2xl bg-slate-900/50 border border-slate-700">
-              <h3 className="text-slate-200 font-semibold mb-3">POST /ai/chat/conversations/:id/messages</h3>
-              <p className="text-sm text-slate-400 mb-4">
-                Required: <code className="bg-slate-800 px-1 rounded">message</code>. Optional: <code className="bg-slate-800 px-1 rounded">documentIds</code>{' '}
-                (≤3), <code className="bg-slate-800 px-1 rounded">shortAnswer</code> (brief vs detailed style).
-              </p>
-              <textarea
-                value={chatMessagePayload}
-                onChange={(e) => setChatMessagePayload(e.target.value)}
-                rows={10}
-                className="w-full px-4 py-3 bg-slate-950 border border-slate-700 rounded-xl text-slate-100 font-mono text-sm mb-3"
-              />
-              <button
-                type="button"
-                onClick={() =>
-                  chatConversationId.trim()
-                    ? runJsonRequest(
-                        'POST',
-                        `/ai/chat/conversations/${encodeURIComponent(chatConversationId.trim())}/messages`,
-                        chatMessagePayload,
-                      )
-                    : setResult({ error: 'Enter conversation UUID to post a message.' })
-                }
-                disabled={loading}
-                className="px-8 py-4 bg-indigo-600 text-white font-semibold rounded-xl hover:bg-indigo-700 disabled:opacity-50"
-              >
-                Send message
               </button>
             </div>
           </>
