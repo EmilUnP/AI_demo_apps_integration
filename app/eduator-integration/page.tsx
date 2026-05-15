@@ -9,15 +9,20 @@ const DEFAULT_BASE_URL =
     ? process.env.NEXT_PUBLIC_EDUATOR_API_BASE_URL.trim()
     : 'http://127.0.0.1:4000/v1';
 
-const DEFAULT_ACCESS_TOKEN =
-  typeof process.env.NEXT_PUBLIC_EDUATOR_ACCESS_TOKEN === 'string'
-    ? process.env.NEXT_PUBLIC_EDUATOR_ACCESS_TOKEN.trim()
-    : '';
+const readEnvApiKey = (): string => {
+  const primary =
+    typeof process.env.NEXT_PUBLIC_EDUATOR_API_KEY === 'string'
+      ? process.env.NEXT_PUBLIC_EDUATOR_API_KEY.trim()
+      : '';
+  if (primary) return primary;
+  const legacy =
+    typeof process.env.NEXT_PUBLIC_EDUATOR_API_KEY === 'string'
+      ? process.env.NEXT_PUBLIC_EDUATOR_API_KEY.trim()
+      : '';
+  return legacy;
+};
 
-const DEFAULT_LOGIN_EMAIL =
-  typeof process.env.NEXT_PUBLIC_EDUATOR_LOGIN_EMAIL === 'string'
-    ? process.env.NEXT_PUBLIC_EDUATOR_LOGIN_EMAIL.trim()
-    : '';
+const DEFAULT_API_KEY = readEnvApiKey();
 
 /** Base64 in JSON is heavy; cap keeps the demo page responsive. Raise if your backend allows larger bodies. */
 const DOCUMENT_UPLOAD_MAX_BYTES = 15 * 1024 * 1024;
@@ -146,9 +151,7 @@ type MainTab = 'documents' | 'exam' | 'lesson' | 'education' | 'chat';
 
 export default function EduatorIntegrationPage() {
   const [baseUrl, setBaseUrl] = useState(DEFAULT_BASE_URL);
-  const [accessToken, setAccessToken] = useState(DEFAULT_ACCESS_TOKEN);
-  const [loginEmail, setLoginEmail] = useState(DEFAULT_LOGIN_EMAIL);
-  const [loginPassword, setLoginPassword] = useState('');
+  const [apiKey, setApiKey] = useState(DEFAULT_API_KEY);
   const [mainTab, setMainTab] = useState<MainTab>('documents');
   const [documentCreatePayload, setDocumentCreatePayload] = useState(
     JSON.stringify(DOCUMENT_CREATE_EXAMPLE, null, 2),
@@ -160,7 +163,7 @@ export default function EduatorIntegrationPage() {
   );
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{ status?: number; data?: unknown; error?: string } | null>(null);
-  const [tokenVerified, setTokenVerified] = useState<boolean | null>(null);
+  const [apiKeyVerified, setApiKeyVerified] = useState<boolean | null>(null);
 
   const [listPage, setListPage] = useState(1);
   const [listPerPage, setListPerPage] = useState(20);
@@ -196,72 +199,34 @@ export default function EduatorIntegrationPage() {
   const [documentPackStatus, setDocumentPackStatus] = useState<string | null>(null);
   const [documentPacking, setDocumentPacking] = useState(false);
 
-  const normalizeToken = (token: string) => {
-    const trimmed = token.trim();
+  const normalizeApiKey = (key: string) => {
+    const trimmed = key.trim();
     return trimmed.startsWith('Bearer ') ? trimmed.slice(7).trim() : trimmed;
   };
 
   const getAuthHeaders = (omitContentType = false): Record<string, string> => {
-    const token = normalizeToken(accessToken);
-    const h: Record<string, string> = { Authorization: `Bearer ${token}` };
+    const key = normalizeApiKey(apiKey);
+    const h: Record<string, string> = { Authorization: `Bearer ${key}` };
     if (!omitContentType) h['Content-Type'] = 'application/json';
     return h;
   };
 
   const apiRoot = () => baseUrl.replace(/\/$/, '');
 
-  const runLogin = async () => {
-    if (!baseUrl?.trim()) {
-      setResult({ error: 'Enter base URL first.' });
+  const verifyApiKey = async () => {
+    if (!baseUrl?.trim() || !apiKey?.trim()) {
+      setApiKeyVerified(false);
+      setResult({ error: 'Enter base URL and full API key (ed_…) first.' });
       return;
     }
-    if (!loginEmail.trim() || !loginPassword) {
-      setResult({ error: 'Enter email and password.' });
-      return;
-    }
-    setLoading(true);
-    setResult(null);
-    const url = `${apiRoot()}/auth/login`;
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: loginEmail.trim(), password: loginPassword }),
+    if (!normalizeApiKey(apiKey).startsWith('ed_')) {
+      setApiKeyVerified(false);
+      setResult({
+        error: 'Use the full HTTP API key from Eduator (starts with ed_), not a list prefix or browser JWT.',
       });
-      const contentType = response.headers.get('content-type');
-      const isJson = contentType?.includes('application/json');
-      const data = isJson ? await response.json() : await response.text();
-      const token =
-        isJson && data && typeof data === 'object'
-          ? (data as { tokens?: { accessToken?: string }; accessToken?: string }).tokens?.accessToken ??
-            (data as { accessToken?: string }).accessToken
-          : undefined;
-      if (response.ok && typeof token === 'string' && token) {
-        setAccessToken(token);
-        setTokenVerified(true);
-        setResult({
-          status: response.status,
-          data: { ...((typeof data === 'object' && data) || {}), tokens: { accessToken: '***saved***' } },
-        });
-      } else {
-        setTokenVerified(false);
-        setResult({ status: response.status, data });
-      }
-    } catch (err: unknown) {
-      setTokenVerified(false);
-      setResult({ error: err instanceof Error ? err.message : 'Login failed' });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const verifyAccessToken = async () => {
-    if (!baseUrl?.trim() || !accessToken?.trim()) {
-      setTokenVerified(false);
-      setResult({ error: 'Enter base URL and access token first.' });
       return;
     }
-    setTokenVerified(null);
+    setApiKeyVerified(null);
     setLoading(true);
     setResult(null);
     const q = new URLSearchParams({ page: '1', perPage: '1' });
@@ -269,7 +234,7 @@ export default function EduatorIntegrationPage() {
     try {
       const response = await fetch(url, { headers: getAuthHeaders() });
       const ok = response.status >= 200 && response.status < 300;
-      setTokenVerified(ok);
+      setApiKeyVerified(ok);
       const raw = await response.text();
       if (ok) {
         setResult({ status: response.status, data: { ok: true } });
@@ -287,7 +252,7 @@ export default function EduatorIntegrationPage() {
       }
       setResult({ status: response.status, data, error: undefined });
     } catch (err: unknown) {
-      setTokenVerified(false);
+      setApiKeyVerified(false);
       const msg = err instanceof Error ? err.message : 'Request failed';
       const isNetwork = /failed|network|cors|fetch/i.test(msg);
       setResult({
@@ -347,8 +312,8 @@ export default function EduatorIntegrationPage() {
   };
 
   const runDocumentCreate = async () => {
-    if (!baseUrl?.trim() || !accessToken?.trim()) {
-      setResult({ error: 'Base URL and access token are required.' });
+    if (!baseUrl?.trim() || !apiKey?.trim()) {
+      setResult({ error: 'Base URL and API key are required.' });
       return;
     }
     setLoading(true);
@@ -385,8 +350,8 @@ export default function EduatorIntegrationPage() {
   };
 
   const runDocumentsList = async () => {
-    if (!baseUrl?.trim() || !accessToken?.trim()) {
-      setResult({ error: 'Base URL and access token are required.' });
+    if (!baseUrl?.trim() || !apiKey?.trim()) {
+      setResult({ error: 'Base URL and API key are required.' });
       return;
     }
     setLoading(true);
@@ -409,8 +374,8 @@ export default function EduatorIntegrationPage() {
   };
 
   const runDocumentsGet = async () => {
-    if (!baseUrl?.trim() || !accessToken?.trim()) {
-      setResult({ error: 'Base URL and access token are required.' });
+    if (!baseUrl?.trim() || !apiKey?.trim()) {
+      setResult({ error: 'Base URL and API key are required.' });
       return;
     }
     if (!documentId?.trim()) {
@@ -432,8 +397,8 @@ export default function EduatorIntegrationPage() {
   };
 
   const runDocumentsGetFile = async () => {
-    if (!baseUrl?.trim() || !accessToken?.trim()) {
-      setResult({ error: 'Base URL and access token are required.' });
+    if (!baseUrl?.trim() || !apiKey?.trim()) {
+      setResult({ error: 'Base URL and API key are required.' });
       return;
     }
     if (!documentId?.trim()) {
@@ -444,7 +409,7 @@ export default function EduatorIntegrationPage() {
     setResult(null);
     const url = `${apiRoot()}/documents/${encodeURIComponent(documentId.trim())}/file`;
     try {
-      const response = await fetch(url, { headers: { Authorization: `Bearer ${normalizeToken(accessToken)}` } });
+      const response = await fetch(url, { headers: { Authorization: `Bearer ${normalizeApiKey(apiKey)}` } });
       const ct = response.headers.get('content-type') ?? '';
       if (!response.ok) {
         setResult({ status: response.status, data: { error: await response.text() } });
@@ -476,8 +441,8 @@ export default function EduatorIntegrationPage() {
   };
 
   const runLessonsList = async () => {
-    if (!baseUrl?.trim() || !accessToken?.trim()) {
-      setResult({ error: 'Base URL and access token are required.' });
+    if (!baseUrl?.trim() || !apiKey?.trim()) {
+      setResult({ error: 'Base URL and API key are required.' });
       return;
     }
     setLoading(true);
@@ -502,8 +467,8 @@ export default function EduatorIntegrationPage() {
   };
 
   const runLessonGet = async () => {
-    if (!baseUrl?.trim() || !accessToken?.trim()) {
-      setResult({ error: 'Base URL and access token are required.' });
+    if (!baseUrl?.trim() || !apiKey?.trim()) {
+      setResult({ error: 'Base URL and API key are required.' });
       return;
     }
     if (!lessonId?.trim()) {
@@ -527,8 +492,8 @@ export default function EduatorIntegrationPage() {
   };
 
   const runEducationPlansList = async () => {
-    if (!baseUrl?.trim() || !accessToken?.trim()) {
-      setResult({ error: 'Base URL and access token are required.' });
+    if (!baseUrl?.trim() || !apiKey?.trim()) {
+      setResult({ error: 'Base URL and API key are required.' });
       return;
     }
     setLoading(true);
@@ -551,8 +516,8 @@ export default function EduatorIntegrationPage() {
   };
 
   const runExamsList = async () => {
-    if (!baseUrl?.trim() || !accessToken?.trim()) {
-      setResult({ error: 'Base URL and access token are required.' });
+    if (!baseUrl?.trim() || !apiKey?.trim()) {
+      setResult({ error: 'Base URL and API key are required.' });
       return;
     }
     setLoading(true);
@@ -576,8 +541,8 @@ export default function EduatorIntegrationPage() {
   };
 
   const runExamsStats = async () => {
-    if (!baseUrl?.trim() || !accessToken?.trim()) {
-      setResult({ error: 'Base URL and access token are required.' });
+    if (!baseUrl?.trim() || !apiKey?.trim()) {
+      setResult({ error: 'Base URL and API key are required.' });
       return;
     }
     setLoading(true);
@@ -596,8 +561,8 @@ export default function EduatorIntegrationPage() {
   };
 
   const runExamGet = async () => {
-    if (!baseUrl?.trim() || !accessToken?.trim()) {
-      setResult({ error: 'Base URL and access token are required.' });
+    if (!baseUrl?.trim() || !apiKey?.trim()) {
+      setResult({ error: 'Base URL and API key are required.' });
       return;
     }
     if (!examSavedId?.trim()) {
@@ -620,8 +585,8 @@ export default function EduatorIntegrationPage() {
   };
 
   const runChatConversationsList = async () => {
-    if (!baseUrl?.trim() || !accessToken?.trim()) {
-      setResult({ error: 'Base URL and access token are required.' });
+    if (!baseUrl?.trim() || !apiKey?.trim()) {
+      setResult({ error: 'Base URL and API key are required.' });
       return;
     }
     setLoading(true);
@@ -640,8 +605,8 @@ export default function EduatorIntegrationPage() {
   };
 
   const runChatConversationGet = async () => {
-    if (!baseUrl?.trim() || !accessToken?.trim()) {
-      setResult({ error: 'Base URL and access token are required.' });
+    if (!baseUrl?.trim() || !apiKey?.trim()) {
+      setResult({ error: 'Base URL and API key are required.' });
       return;
     }
     if (!chatConversationId?.trim()) {
@@ -664,8 +629,8 @@ export default function EduatorIntegrationPage() {
   };
 
   const runJsonRequest = async (method: 'POST' | 'PATCH', path: string, payload: string) => {
-    if (!baseUrl?.trim() || !accessToken?.trim()) {
-      setResult({ error: 'Base URL and access token are required.' });
+    if (!baseUrl?.trim() || !apiKey?.trim()) {
+      setResult({ error: 'Base URL and API key are required.' });
       return;
     }
     setLoading(true);
@@ -690,8 +655,8 @@ export default function EduatorIntegrationPage() {
   };
 
   const runDeleteRequest = async (path: string) => {
-    if (!baseUrl?.trim() || !accessToken?.trim()) {
-      setResult({ error: 'Base URL and access token are required.' });
+    if (!baseUrl?.trim() || !apiKey?.trim()) {
+      setResult({ error: 'Base URL and API key are required.' });
       return;
     }
     setLoading(true);
@@ -729,8 +694,8 @@ export default function EduatorIntegrationPage() {
   };
 
   const runGeminiKeysGet = async () => {
-    if (!baseUrl?.trim() || !accessToken?.trim()) {
-      setResult({ error: 'Base URL and access token are required.' });
+    if (!baseUrl?.trim() || !apiKey?.trim()) {
+      setResult({ error: 'Base URL and API key are required.' });
       return;
     }
     setLoading(true);
@@ -752,8 +717,8 @@ export default function EduatorIntegrationPage() {
       setResult({ error: 'Please enter API base URL' });
       return;
     }
-    if (!accessToken?.trim()) {
-      setResult({ error: 'JWT access token is required (login or paste Bearer token).' });
+    if (!apiKey?.trim()) {
+      setResult({ error: 'Full API key is required (ed_… secret from Eduator).' });
       return;
     }
     setLoading(true);
@@ -823,10 +788,9 @@ export default function EduatorIntegrationPage() {
       <main className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
         <div className="mb-10">
           <h1 className="text-4xl font-extrabold text-slate-100 mb-2">Eduator API Integration</h1>
-          <p className="text-slate-400">
-            JWT <code className="bg-slate-800 px-1 rounded">Authorization: Bearer</code>, base{' '}
-            <code className="bg-slate-800 px-1 rounded">/v1</code>. AI routes use <strong className="text-slate-300">camelCase</strong>; REST education
-            plan writes use <strong className="text-slate-300">snake_case</strong>. Languages: en, az, tr, ru. Open{' '}
+          <p className="text-slate-400 mb-4">
+            Third-party integrations over <code className="bg-slate-800 px-1 rounded">/v1</code>. Use an{' '}
+            <strong className="text-slate-300">HTTP API key</strong> (<code className="bg-slate-800 px-1 rounded">ed_…</code>), not web login JWT. Open{' '}
             <a
               href={docsUiUrl()}
               target="_blank"
@@ -855,82 +819,42 @@ export default function EduatorIntegrationPage() {
             </p>
           </div>
 
-          <div className="p-6 rounded-2xl bg-slate-900/50 border border-slate-700 space-y-4">
-            <h3 className="text-slate-200 font-semibold">Login (JWT)</h3>
-            <div className="grid sm:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm text-slate-400 mb-1">Email</label>
-                <input
-                  type="email"
-                  value={loginEmail}
-                  onChange={(e) => setLoginEmail(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-slate-100"
-                  placeholder="admin@example.com"
-                  autoComplete="username"
-                />
-              </div>
-              <div>
-                <label className="block text-sm text-slate-400 mb-1">Password</label>
-                <input
-                  type="password"
-                  value={loginPassword}
-                  onChange={(e) => setLoginPassword(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-slate-100"
-                  placeholder="••••••••"
-                  autoComplete="current-password"
-                />
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={runLogin}
-              disabled={loading}
-              className="px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-xl hover:bg-indigo-700 disabled:opacity-50"
-            >
-              {loading ? 'Signing in…' : 'POST /auth/login'}
-            </button>
-            <p className="text-xs text-slate-500">
-              Password is not read from env (avoid exposing secrets in the browser bundle). Optionally set{' '}
-              <code className="bg-slate-800 px-1 rounded">NEXT_PUBLIC_EDUATOR_LOGIN_EMAIL</code> to pre-fill email only.
-            </p>
-          </div>
-
           <div>
             <label className="block text-sm font-medium text-slate-300 mb-2">
-              Access token (JWT) <span className="text-amber-400">(required for protected routes)</span>
+              API key <span className="text-amber-400">(required — full ed_… secret)</span>
             </label>
             <div className="flex gap-3 items-center flex-wrap">
               <input
                 type="password"
-                value={accessToken}
+                value={apiKey}
                 onChange={(e) => {
-                  setAccessToken(e.target.value);
-                  setTokenVerified(null);
+                  setApiKey(e.target.value);
+                  setApiKeyVerified(null);
                 }}
                 className="flex-1 min-w-[200px] px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                placeholder="Paste access token (or login above)"
+                placeholder="ed_… (full key from Eduator)"
               />
               <button
                 type="button"
-                onClick={verifyAccessToken}
-                disabled={loading || !accessToken.trim()}
+                onClick={verifyApiKey}
+                disabled={loading || !apiKey.trim()}
                 className="px-4 py-3 bg-slate-700 text-slate-200 font-medium rounded-xl hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed border border-slate-600"
               >
-                {loading ? 'Checking…' : 'Verify token'}
+                {loading ? 'Checking…' : 'Verify API key'}
               </button>
             </div>
             <p className="mt-1 text-sm text-slate-500">
               Verify calls GET <code className="bg-slate-800 px-1 rounded">/documents?page=1&amp;perPage=1</code> and only shows{' '}
-              <code className="bg-slate-800 px-1 rounded">{'{ "ok": true }'}</code> when it succeeds. Pre-fill token:{' '}
-              <code className="bg-slate-800 px-1 rounded">NEXT_PUBLIC_EDUATOR_ACCESS_TOKEN</code> in{' '}
+              <code className="bg-slate-800 px-1 rounded">{'{ "ok": true }'}</code> when it succeeds. Pre-fill:{' '}
+              <code className="bg-slate-800 px-1 rounded">NEXT_PUBLIC_EDUATOR_API_KEY</code> in{' '}
               <code className="bg-slate-800 px-1 rounded">.env.local</code>.
             </p>
-            {DEFAULT_ACCESS_TOKEN && (
-              <p className="mt-1 text-sm text-indigo-400">Token from env was pre-filled. Use Verify or call an endpoint.</p>
+            {DEFAULT_API_KEY && (
+              <p className="mt-1 text-sm text-indigo-400">API key from env was pre-filled.</p>
             )}
-            {tokenVerified === true && <p className="mt-1 text-sm text-emerald-400">Token accepted.</p>}
-            {tokenVerified === false && (
-              <p className="mt-1 text-sm text-amber-300">Token rejected or request failed — see Response below.</p>
+            {apiKeyVerified === true && <p className="mt-1 text-sm text-emerald-400">API key accepted.</p>}
+            {apiKeyVerified === false && (
+              <p className="mt-1 text-sm text-amber-300">API key rejected or request failed — see Response below.</p>
             )}
           </div>
 
@@ -938,11 +862,12 @@ export default function EduatorIntegrationPage() {
             <button
               type="button"
               onClick={runGeminiKeysGet}
-              disabled={loading || !accessToken.trim()}
+              disabled={loading || !apiKey.trim()}
               className="px-4 py-2 rounded-xl bg-slate-800 text-slate-200 border border-slate-600 hover:bg-slate-700 disabled:opacity-50 text-sm"
             >
               GET /users/me/ai-keys/gemini
             </button>
+            <p className="w-full text-xs text-slate-500 mt-1">Save a Gemini key in Eduator first; then AI routes can run.</p>
           </div>
         </div>
 
@@ -1412,8 +1337,8 @@ export default function EduatorIntegrationPage() {
               <h3 className="text-slate-200 font-semibold mb-3">GET /education-plans</h3>
               <p className="text-sm text-slate-400 mb-4">
                 Returns <code className="bg-slate-800 px-1 rounded">{'{ "items": [...] }'}</code> with <strong className="text-slate-300">full plan rows</strong>{' '}
-                (including content). Optional query: <code className="bg-slate-800 px-1 rounded">search</code> only — there is no separate GET-by-id; find a plan
-                in <code className="bg-slate-800 px-1 rounded">items</code> by <code className="bg-slate-800 px-1 rounded">id</code>.
+                (including content). Optional <code className="bg-slate-800 px-1 rounded">search</code>. No GET-by-id or stats — find plans in{' '}
+                <code className="bg-slate-800 px-1 rounded">items</code> by <code className="bg-slate-800 px-1 rounded">id</code>.
               </p>
               <div className="flex flex-wrap items-center gap-4">
                 <input
@@ -1445,7 +1370,7 @@ export default function EduatorIntegrationPage() {
                   type="text"
                   value={educationPlanRestId}
                   onChange={(e) => setEducationPlanRestId(e.target.value)}
-                  placeholder="Plan UUID (for PATCH / DELETE)"
+                  placeholder="Plan UUID (for DELETE)"
                   className="flex-1 min-w-[200px] px-4 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-slate-100 placeholder-slate-500"
                 />
                 <button
