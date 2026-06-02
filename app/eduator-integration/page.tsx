@@ -7,7 +7,7 @@ const DEFAULT_BASE_URL =
   typeof process.env.NEXT_PUBLIC_EDUATOR_API_BASE_URL === 'string' &&
   process.env.NEXT_PUBLIC_EDUATOR_API_BASE_URL.trim()
     ? process.env.NEXT_PUBLIC_EDUATOR_API_BASE_URL.trim()
-    : 'http://127.0.0.1:4000/v1';
+    : 'https://api.eduator.ai/v1';
 
 const readEnvApiKey = (): string => {
   const primary =
@@ -131,11 +131,20 @@ const EXAM_SAVE_POST_EXAMPLE = {
   questions: [],
 };
 
-const CHAT_CONVERSATION_POST_EXAMPLE = {
-  title: 'My tutor',
+/** Step 1 — tutor config on an assistant. */
+const CHAT_ASSISTANT_POST_EXAMPLE = {
+  title: 'Math tutor',
+  documentIds: [] as string[],
 };
 
-const CHAT_CONVERSATION_WITH_DOCS_EXAMPLE = {
+/** Step 2 — thread under an assistant (optional externalUserId for your student id). */
+const CHAT_THREAD_POST_EXAMPLE = {
+  title: 'Session 1',
+  externalUserId: 'student-42',
+};
+
+/** Legacy POST /ai/chat/conversations (no assistant). */
+const CHAT_LEGACY_CONVERSATION_POST_EXAMPLE = {
   title: 'Lesson prep',
   documentIds: ['DOCUMENT_UUID'],
 };
@@ -145,7 +154,7 @@ const CHAT_PATCH_EXAMPLE = {
   documentIds: ['DOCUMENT_UUID'],
 };
 
-/** Plain text tutor chat — no document RAG. */
+/** Plain text — no document RAG on this message. */
 const CHAT_MESSAGE_PLAIN_EXAMPLE = {
   message: 'Hello',
   documentIds: [] as string[],
@@ -158,16 +167,19 @@ const CHAT_MESSAGE_WITH_RAG_EXAMPLE = {
   shortAnswer: false,
 };
 
-const pickChatConversationId = (data: unknown): string | undefined => {
+const pickNestedId = (data: unknown, key: 'assistant' | 'conversation'): string | undefined => {
   if (!data || typeof data !== 'object') return undefined;
   const d = data as Record<string, unknown>;
-  const conv = d.conversation;
-  if (conv && typeof conv === 'object' && typeof (conv as { id?: unknown }).id === 'string') {
-    return (conv as { id: string }).id;
+  const nested = d[key];
+  if (nested && typeof nested === 'object' && typeof (nested as { id?: unknown }).id === 'string') {
+    return (nested as { id: string }).id;
   }
   if (typeof d.id === 'string') return d.id;
   return undefined;
 };
+
+const pickChatAssistantId = (data: unknown) => pickNestedId(data, 'assistant');
+const pickChatConversationId = (data: unknown) => pickNestedId(data, 'conversation');
 
 type MainTab = 'documents' | 'exam' | 'lesson' | 'education' | 'chat';
 
@@ -211,8 +223,14 @@ export default function EduatorIntegrationPage() {
   const [examSavedId, setExamSavedId] = useState('');
   const [examSavePayload, setExamSavePayload] = useState(JSON.stringify(EXAM_SAVE_POST_EXAMPLE, null, 2));
 
+  const [chatAssistantId, setChatAssistantId] = useState('');
+  const [chatAssistantPayload, setChatAssistantPayload] = useState(JSON.stringify(CHAT_ASSISTANT_POST_EXAMPLE, null, 2));
+  const [chatThreadPayload, setChatThreadPayload] = useState(JSON.stringify(CHAT_THREAD_POST_EXAMPLE, null, 2));
+  const [chatExternalUserId, setChatExternalUserId] = useState('student-42');
   const [chatConversationId, setChatConversationId] = useState('');
-  const [chatCreatePayload, setChatCreatePayload] = useState(JSON.stringify(CHAT_CONVERSATION_POST_EXAMPLE, null, 2));
+  const [chatLegacyCreatePayload, setChatLegacyCreatePayload] = useState(
+    JSON.stringify(CHAT_LEGACY_CONVERSATION_POST_EXAMPLE, null, 2),
+  );
   const [chatPatchPayload, setChatPatchPayload] = useState(JSON.stringify(CHAT_PATCH_EXAMPLE, null, 2));
   const [chatMessagePayload, setChatMessagePayload] = useState(JSON.stringify(CHAT_MESSAGE_PLAIN_EXAMPLE, null, 2));
 
@@ -606,16 +624,15 @@ export default function EduatorIntegrationPage() {
     }
   };
 
-  const runChatConversationsList = async () => {
+  const runChatAssistantsList = async () => {
     if (!baseUrl?.trim() || !apiKey?.trim()) {
       setResult({ error: 'Base URL and API key are required.' });
       return;
     }
     setLoading(true);
     setResult(null);
-    const url = `${apiRoot()}/ai/chat/conversations`;
     try {
-      const response = await fetch(url, { headers: getAuthHeaders() });
+      const response = await fetch(`${apiRoot()}/ai/chat/assistants`, { headers: getAuthHeaders() });
       const ct = response.headers.get('content-type');
       const data = ct?.includes('application/json') ? await response.json().catch(() => ({})) : await response.text();
       setResult({ status: response.status, data });
@@ -626,16 +643,54 @@ export default function EduatorIntegrationPage() {
     }
   };
 
-  const runChatConversationCreate = async () => {
+  const runChatAssistantCreate = async () => {
     if (!baseUrl?.trim() || !apiKey?.trim()) {
       setResult({ error: 'Base URL and API key are required.' });
       return;
     }
     setLoading(true);
     setResult(null);
-    const url = `${apiRoot()}/ai/chat/conversations`;
     try {
-      const body = JSON.parse(chatCreatePayload || '{}');
+      const body = JSON.parse(chatAssistantPayload || '{}');
+      const response = await fetch(`${apiRoot()}/ai/chat/assistants`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify(body),
+      });
+      const ct = response.headers.get('content-type');
+      const data = ct?.includes('application/json') ? await response.json().catch(() => ({})) : await response.text();
+      if (response.ok) {
+        const newId = pickChatAssistantId(data);
+        if (newId) setChatAssistantId(newId);
+        setResult({
+          status: response.status,
+          data: newId ? { ...(typeof data === 'object' && data ? data : {}), _hint: `assistant.id saved above: ${newId}` } : data,
+        });
+      } else {
+        setResult({ status: response.status, data: { error: data } });
+      }
+    } catch (e: unknown) {
+      if (e instanceof SyntaxError) setResult({ error: 'Invalid JSON in assistant body' });
+      else setResult({ error: e instanceof Error ? e.message : 'Request failed' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const runChatThreadCreate = async () => {
+    if (!baseUrl?.trim() || !apiKey?.trim()) {
+      setResult({ error: 'Base URL and API key are required.' });
+      return;
+    }
+    if (!chatAssistantId.trim()) {
+      setResult({ error: 'Create an assistant first (Step 1) or paste assistant.id.' });
+      return;
+    }
+    setLoading(true);
+    setResult(null);
+    const url = `${apiRoot()}/ai/chat/assistants/${encodeURIComponent(chatAssistantId.trim())}/conversations`;
+    try {
+      const body = JSON.parse(chatThreadPayload || '{}');
       const response = await fetch(url, {
         method: 'POST',
         headers: getAuthHeaders(),
@@ -654,7 +709,87 @@ export default function EduatorIntegrationPage() {
         setResult({ status: response.status, data: { error: data } });
       }
     } catch (e: unknown) {
-      if (e instanceof SyntaxError) setResult({ error: 'Invalid JSON in create body' });
+      if (e instanceof SyntaxError) setResult({ error: 'Invalid JSON in thread body' });
+      else setResult({ error: e instanceof Error ? e.message : 'Request failed' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const runChatAssistantConversationsList = async () => {
+    if (!baseUrl?.trim() || !apiKey?.trim()) {
+      setResult({ error: 'Base URL and API key are required.' });
+      return;
+    }
+    if (!chatAssistantId.trim()) {
+      setResult({ error: 'Enter assistant.id to list its conversations.' });
+      return;
+    }
+    setLoading(true);
+    setResult(null);
+    const params = new URLSearchParams();
+    if (chatExternalUserId.trim()) params.set('externalUserId', chatExternalUserId.trim());
+    const qs = params.toString();
+    const url = `${apiRoot()}/ai/chat/assistants/${encodeURIComponent(chatAssistantId.trim())}/conversations${qs ? `?${qs}` : ''}`;
+    try {
+      const response = await fetch(url, { headers: getAuthHeaders() });
+      const ct = response.headers.get('content-type');
+      const data = ct?.includes('application/json') ? await response.json().catch(() => ({})) : await response.text();
+      setResult({ status: response.status, data });
+    } catch (err: unknown) {
+      setResult({ error: err instanceof Error ? err.message : 'Request failed' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const runChatConversationsList = async () => {
+    if (!baseUrl?.trim() || !apiKey?.trim()) {
+      setResult({ error: 'Base URL and API key are required.' });
+      return;
+    }
+    setLoading(true);
+    setResult(null);
+    try {
+      const response = await fetch(`${apiRoot()}/ai/chat/conversations`, { headers: getAuthHeaders() });
+      const ct = response.headers.get('content-type');
+      const data = ct?.includes('application/json') ? await response.json().catch(() => ({})) : await response.text();
+      setResult({ status: response.status, data });
+    } catch (err: unknown) {
+      setResult({ error: err instanceof Error ? err.message : 'Request failed' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const runChatLegacyConversationCreate = async () => {
+    if (!baseUrl?.trim() || !apiKey?.trim()) {
+      setResult({ error: 'Base URL and API key are required.' });
+      return;
+    }
+    setLoading(true);
+    setResult(null);
+    try {
+      const body = JSON.parse(chatLegacyCreatePayload || '{}');
+      const response = await fetch(`${apiRoot()}/ai/chat/conversations`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify(body),
+      });
+      const ct = response.headers.get('content-type');
+      const data = ct?.includes('application/json') ? await response.json().catch(() => ({})) : await response.text();
+      if (response.ok) {
+        const newId = pickChatConversationId(data);
+        if (newId) setChatConversationId(newId);
+        setResult({
+          status: response.status,
+          data: newId ? { ...(typeof data === 'object' && data ? data : {}), _hint: `conversation.id saved above: ${newId}` } : data,
+        });
+      } else {
+        setResult({ status: response.status, data: { error: data } });
+      }
+    } catch (e: unknown) {
+      if (e instanceof SyntaxError) setResult({ error: 'Invalid JSON in legacy create body' });
       else setResult({ error: e instanceof Error ? e.message : 'Request failed' });
     } finally {
       setLoading(false);
@@ -868,7 +1003,7 @@ export default function EduatorIntegrationPage() {
               value={baseUrl}
               onChange={(e) => setBaseUrl(e.target.value)}
               className="w-full px-4 py-3 bg-slate-900 border border-slate-700 rounded-xl text-slate-100 placeholder-slate-500 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-              placeholder="http://127.0.0.1:4000/v1"
+              placeholder="https://api.eduator.ai/v1"
             />
             <p className="mt-1 text-sm text-slate-500">
               Override with <code className="bg-slate-800 px-1 rounded">NEXT_PUBLIC_EDUATOR_API_BASE_URL</code> in{' '}
@@ -1464,71 +1599,78 @@ export default function EduatorIntegrationPage() {
 
         {mainTab === 'chat' && (
           <>
-            <div className="mt-4 p-4 rounded-xl bg-slate-900/50 border border-slate-700 mb-6">
-              <h3 className="text-slate-200 font-semibold mb-2">AI assistant — /ai/chat/conversations</h3>
-              <p className="text-sm text-slate-400 mb-3">
-                Owner-scoped threads. Bodies use <strong className="text-slate-300">camelCase</strong>:{' '}
-                <code className="bg-slate-800 px-1 rounded">documentIds</code>, <code className="bg-slate-800 px-1 rounded">shortAnswer</code>. Up to{' '}
-                <strong className="text-slate-300">three</strong> document UUIDs per message for RAG; use{' '}
-                <code className="bg-slate-800 px-1 rounded">documentIds: []</code> for plain text only.
-              </p>
-              <p className="text-sm text-slate-400">
-                Requires a Gemini API key on this account (Eduator → Gemini Key) or{' '}
-                <code className="bg-slate-800 px-1 rounded">GOOGLE_GEMINI_API_KEY</code> on the server. Backend needs migration{' '}
-                <code className="bg-slate-800 px-1 rounded">008_teacher_chat.sql</code> (<code className="bg-slate-800 px-1 rounded">db:migrate</code>).
-              </p>
-            </div>
-
             <div className="p-6 rounded-2xl bg-indigo-950/20 border border-indigo-800/40 mb-6">
-              <h3 className="text-slate-200 font-semibold mb-2">Simple tutor chat (3 steps)</h3>
-              <ol className="list-decimal list-inside space-y-2 text-sm text-slate-400 mb-4">
-                <li>
-                  <strong className="text-slate-300">Create</strong> a conversation → copy{' '}
-                  <code className="bg-slate-800 px-1 rounded">conversation.id</code> (auto-filled below after create).
-                </li>
-                <li>
-                  <strong className="text-slate-300">Send messages</strong> with the same conversation id; prior messages in the thread are included
-                  automatically.
-                </li>
-                <li>
-                  Keep chatting — <code className="bg-slate-800 px-1 rounded">documentIds: []</code> for plain text, or up to 3 UUIDs for document RAG.
-                </li>
-              </ol>
-              <label className="block text-sm font-medium text-slate-300 mb-2">Step 1 — POST body (optional title, documentIds)</label>
+              <h3 className="text-slate-200 font-semibold mb-2">Third-party tutor chat (3 steps)</h3>
+
+              <h4 className="text-slate-300 font-medium mb-2">Step 1 — POST /ai/chat/assistants</h4>
+              <label className="block text-sm font-medium text-slate-300 mb-2">Assistant UUID</label>
+              <input
+                type="text"
+                value={chatAssistantId}
+                onChange={(e) => setChatAssistantId(e.target.value)}
+                placeholder="Filled after create, or paste assistant.id"
+                className="w-full px-4 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-slate-100 placeholder-slate-500 mb-3"
+              />
               <textarea
-                value={chatCreatePayload}
-                onChange={(e) => setChatCreatePayload(e.target.value)}
+                value={chatAssistantPayload}
+                onChange={(e) => setChatAssistantPayload(e.target.value)}
+                rows={4}
+                className="w-full px-4 py-3 bg-slate-950 border border-slate-700 rounded-xl text-slate-100 font-mono text-sm mb-3"
+              />
+              <div className="flex flex-wrap gap-2 mb-3">
+                <button
+                  type="button"
+                  onClick={() => setChatAssistantPayload(JSON.stringify(CHAT_ASSISTANT_POST_EXAMPLE, null, 2))}
+                  className="px-3 py-1.5 text-xs bg-slate-800 text-slate-300 rounded-lg hover:bg-slate-700 border border-slate-600"
+                >
+                  Example: Math tutor
+                </button>
+                <button
+                  type="button"
+                  onClick={runChatAssistantsList}
+                  disabled={loading}
+                  className="px-3 py-1.5 text-xs bg-slate-800 text-slate-300 rounded-lg hover:bg-slate-700 border border-slate-600"
+                >
+                  List assistants
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={runChatAssistantCreate}
+                disabled={loading}
+                className="px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-xl hover:bg-indigo-700 disabled:opacity-50 mb-6"
+              >
+                Create assistant
+              </button>
+
+              <h4 className="text-slate-300 font-medium mb-2">Step 2 — POST /ai/chat/assistants/:id/conversations</h4>
+              <textarea
+                value={chatThreadPayload}
+                onChange={(e) => setChatThreadPayload(e.target.value)}
                 rows={5}
                 className="w-full px-4 py-3 bg-slate-950 border border-slate-700 rounded-xl text-slate-100 font-mono text-sm mb-3"
               />
               <div className="flex flex-wrap gap-2 mb-3">
                 <button
                   type="button"
-                  onClick={() => setChatCreatePayload(JSON.stringify(CHAT_CONVERSATION_POST_EXAMPLE, null, 2))}
+                  onClick={() => setChatThreadPayload(JSON.stringify(CHAT_THREAD_POST_EXAMPLE, null, 2))}
                   className="px-3 py-1.5 text-xs bg-slate-800 text-slate-300 rounded-lg hover:bg-slate-700 border border-slate-600"
                 >
-                  Example: plain tutor
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setChatCreatePayload(JSON.stringify(CHAT_CONVERSATION_WITH_DOCS_EXAMPLE, null, 2))}
-                  className="px-3 py-1.5 text-xs bg-slate-800 text-slate-300 rounded-lg hover:bg-slate-700 border border-slate-600"
-                >
-                  Example: with documentIds
+                  Example: Session + externalUserId
                 </button>
               </div>
               <button
                 type="button"
-                onClick={runChatConversationCreate}
+                onClick={runChatThreadCreate}
                 disabled={loading}
                 className="px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-xl hover:bg-indigo-700 disabled:opacity-50"
               >
-                Create conversation
+                New conversation (thread)
               </button>
             </div>
 
             <div className="p-6 rounded-2xl bg-slate-900/50 border border-slate-700 mb-6">
-              <h3 className="text-slate-200 font-semibold mb-3">Step 2 — POST /ai/chat/conversations/:id/messages</h3>
+              <h3 className="text-slate-200 font-semibold mb-3">Step 3 — POST /ai/chat/conversations/:id/messages</h3>
               <p className="text-sm text-slate-400 mb-3">
                 Required: <code className="bg-slate-800 px-1 rounded">message</code>. Optional:{' '}
                 <code className="bg-slate-800 px-1 rounded">documentIds</code> (≤3 for RAG),{' '}
@@ -1573,7 +1715,7 @@ export default function EduatorIntegrationPage() {
                         `/ai/chat/conversations/${encodeURIComponent(chatConversationId.trim())}/messages`,
                         chatMessagePayload,
                       )
-                    : setResult({ error: 'Create a conversation first (Step 1) or paste conversation.id.' })
+                    : setResult({ error: 'Open a conversation first (Step 2) or paste conversation.id.' })
                 }
                 disabled={loading}
                 className="px-8 py-4 bg-indigo-600 text-white font-semibold rounded-xl hover:bg-indigo-700 disabled:opacity-50"
@@ -1583,14 +1725,59 @@ export default function EduatorIntegrationPage() {
             </div>
 
             <div className="p-6 rounded-2xl bg-slate-900/50 border border-slate-700 mb-6">
-              <h3 className="text-slate-200 font-semibold mb-3">GET /ai/chat/conversations · list</h3>
+              <h3 className="text-slate-200 font-semibold mb-3">GET /ai/chat/assistants/:id/conversations</h3>
+              <p className="text-sm text-slate-400 mb-3">
+                List threads for an assistant. Optional query <code className="bg-slate-800 px-1 rounded">?externalUserId=</code> to group by your student id.
+              </p>
+              <label className="block text-sm font-medium text-slate-300 mb-2">externalUserId (optional filter)</label>
+              <input
+                type="text"
+                value={chatExternalUserId}
+                onChange={(e) => setChatExternalUserId(e.target.value)}
+                placeholder="student-42"
+                className="w-full px-4 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-slate-100 placeholder-slate-500 mb-4"
+              />
+              <button
+                type="button"
+                onClick={runChatAssistantConversationsList}
+                disabled={loading || !chatAssistantId.trim()}
+                className="px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-xl hover:bg-indigo-700 disabled:opacity-50 mr-3"
+              >
+                List assistant conversations
+              </button>
               <button
                 type="button"
                 onClick={runChatConversationsList}
                 disabled={loading}
-                className="px-6 py-2.5 bg-indigo-600 text-white font-medium rounded-xl hover:bg-indigo-700 disabled:opacity-50"
+                className="px-6 py-2.5 bg-slate-700 text-white font-medium rounded-xl hover:bg-slate-600 disabled:opacity-50 border border-slate-600"
               >
-                List conversations
+                List all conversations (legacy)
+              </button>
+            </div>
+
+            <div className="p-6 rounded-2xl bg-slate-900/50 border border-amber-900/30 border mb-6">
+              <h3 className="text-slate-200 font-semibold mb-2">Legacy — POST /ai/chat/conversations</h3>
+              <p className="text-sm text-slate-500 mb-3">Direct conversation create without an assistant. Prefer the 3-step flow above.</p>
+              <textarea
+                value={chatLegacyCreatePayload}
+                onChange={(e) => setChatLegacyCreatePayload(e.target.value)}
+                rows={6}
+                className="w-full px-4 py-3 bg-slate-950 border border-slate-700 rounded-xl text-slate-100 font-mono text-sm mb-3"
+              />
+              <button
+                type="button"
+                onClick={() => setChatLegacyCreatePayload(JSON.stringify(CHAT_LEGACY_CONVERSATION_POST_EXAMPLE, null, 2))}
+                className="px-3 py-1.5 text-xs bg-slate-800 text-slate-300 rounded-lg hover:bg-slate-700 border border-slate-600 mb-3 mr-2"
+              >
+                Example: Lesson prep
+              </button>
+              <button
+                type="button"
+                onClick={runChatLegacyConversationCreate}
+                disabled={loading}
+                className="px-6 py-2.5 bg-slate-700 text-white font-medium rounded-xl hover:bg-slate-600 disabled:opacity-50 border border-slate-600"
+              >
+                Create conversation (legacy)
               </button>
             </div>
 
