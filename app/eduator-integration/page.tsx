@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 
 const DEFAULT_BASE_URL =
@@ -59,6 +59,51 @@ const readFileAsBase64 = (file: File): Promise<string> =>
     reader.onerror = () => reject(new Error(reader.error?.message ?? 'Read failed'));
     reader.readAsDataURL(file);
   });
+
+const URL_MATCH = /https?:\/\/[^\s"'<>()]+/g;
+const IMAGE_URL_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg'];
+
+const extractHttpUrls = (value: unknown, out: Set<string>): void => {
+  if (typeof value === 'string') {
+    const matches = value.match(URL_MATCH);
+    if (!matches) return;
+    for (const match of matches) out.add(match);
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) extractHttpUrls(item, out);
+    return;
+  }
+
+  if (value && typeof value === 'object') {
+    for (const nested of Object.values(value)) extractHttpUrls(nested, out);
+  }
+};
+
+const getResponseUrls = (value: unknown): string[] => {
+  const urls = new Set<string>();
+  extractHttpUrls(value, urls);
+  return Array.from(urls);
+};
+
+const isImageUrl = (url: string): boolean => {
+  const normalized = url.toLowerCase();
+  return IMAGE_URL_EXTENSIONS.some((ext) => normalized.includes(`${ext}?`) || normalized.endsWith(ext));
+};
+
+const normalizeMediaUrl = (url: string): string => {
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname === 'api.eduator.ai' && parsed.protocol === 'http:') {
+      parsed.protocol = 'https:';
+      return parsed.toString();
+    }
+    return url;
+  } catch {
+    return url;
+  }
+};
 
 const EXAM_WITH_DOCUMENT_ID = {
   documentId: 'uuid-from-documents',
@@ -197,6 +242,8 @@ export default function EduatorIntegrationPage() {
   );
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{ status?: number; data?: unknown; error?: string } | null>(null);
+  const responseUrls = useMemo(() => (result?.data ? getResponseUrls(result.data) : []), [result?.data]);
+  const [imagePreviewSources, setImagePreviewSources] = useState<Record<string, string>>({});
   const [apiKeyVerified, setApiKeyVerified] = useState<boolean | null>(null);
 
   const [listPage, setListPage] = useState(1);
@@ -252,6 +299,53 @@ export default function EduatorIntegrationPage() {
   };
 
   const apiRoot = () => baseUrl.replace(/\/$/, '');
+
+  useEffect(() => {
+    const imageUrls = responseUrls.filter(isImageUrl);
+    if (imageUrls.length === 0) {
+      setImagePreviewSources({});
+      return;
+    }
+
+    let cancelled = false;
+    const objectUrlsToRevoke: string[] = [];
+
+    const loadImagePreviews = async (): Promise<void> => {
+      const nextSources: Record<string, string> = {};
+      const bearer = normalizeApiKey(apiKey);
+
+      for (const rawUrl of imageUrls) {
+        const requestUrl = normalizeMediaUrl(rawUrl);
+        try {
+          const response = await fetch(requestUrl, {
+            headers: { Authorization: `Bearer ${bearer}` },
+          });
+          if (!response.ok) continue;
+          const blob = await response.blob();
+          if (!blob.type.startsWith('image/')) continue;
+          const objectUrl = URL.createObjectURL(blob);
+          objectUrlsToRevoke.push(objectUrl);
+          nextSources[rawUrl] = objectUrl;
+        } catch {
+          // Keep UI usable even when individual media URLs fail.
+        }
+      }
+
+      if (cancelled) {
+        for (const objectUrl of objectUrlsToRevoke) URL.revokeObjectURL(objectUrl);
+        return;
+      }
+
+      setImagePreviewSources(nextSources);
+    };
+
+    void loadImagePreviews();
+
+    return () => {
+      cancelled = true;
+      for (const objectUrl of objectUrlsToRevoke) URL.revokeObjectURL(objectUrl);
+    };
+  }, [apiKey, responseUrls]);
 
   const verifyApiKey = async () => {
     if (!baseUrl?.trim() || !apiKey?.trim()) {
@@ -1859,6 +1953,33 @@ export default function EduatorIntegrationPage() {
                 <pre className="p-4 rounded-xl bg-slate-950 border border-slate-700 text-slate-300 text-sm overflow-auto max-h-96 font-mono whitespace-pre-wrap break-words">
                   {JSON.stringify(result.data, null, 2)}
                 </pre>
+                {responseUrls.length > 0 && (
+                  <div className="mt-4 rounded-xl bg-slate-950 border border-slate-700 p-4">
+                    <h3 className="text-sm font-semibold text-slate-200 mb-3">Detected file links</h3>
+                    <div className="space-y-3">
+                      {responseUrls.map((url) => (
+                        <div key={url} className="rounded-lg border border-slate-700 bg-slate-900/60 p-3">
+                          <a
+                            href={normalizeMediaUrl(url)}
+                            target="_blank"
+                            rel="noreferrer noopener"
+                            className="text-indigo-300 hover:text-indigo-200 break-all text-sm"
+                          >
+                            {url}
+                          </a>
+                          {isImageUrl(url) && imagePreviewSources[url] && (
+                            <img
+                              src={imagePreviewSources[url]}
+                              alt="Lesson media preview"
+                              loading="lazy"
+                              className="mt-3 max-h-56 w-auto rounded-lg border border-slate-700"
+                            />
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </>
             )}
           </div>
