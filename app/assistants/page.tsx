@@ -34,9 +34,9 @@ const getApiKey = (index: number) => {
 
 const assistants: Assistant[] = [
   {
-    id: 'əmək-məcələsi-1760266330650',
-    name: 'Əmək Məcələsi Köməkçisi',
-    description: 'Əmək qanunvericiliyi və işçi hüquqları ilə bağlı suallara cavab verir',
+    id: 'my-assistant-1780156778831',
+    name: 'Pulse Phone',
+    description: 'Əmək Məcələsi — əmək qanunvericiliyi və işçi hüquqları ilə bağlı suallara cavab verir',
     icon: '👨‍💼',
     image: '/assistants/assistant-purple.png', // Place image in public/assistants/assistant-1.png
     color: 'indigo',

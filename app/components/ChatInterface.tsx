@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
+import ChatMessageContent, { messageHasTable } from './ChatMessageContent';
 
 interface Message {
   id: string;
@@ -10,17 +11,35 @@ interface Message {
   sources?: Array<{ title: string; url?: string; page?: string }>;
 }
 
+const CHAT_LANGUAGES = [
+  { value: 'az', label: 'Azərbaycan' },
+  { value: 'en', label: 'English' },
+  { value: 'tr', label: 'Türkçe' },
+  { value: 'ru', label: 'Русский' },
+] as const;
+
+type ChatLanguage = (typeof CHAT_LANGUAGES)[number]['value'];
+
 interface ChatInterfaceProps {
   assistantId: string;
   assistantName: string;
   apiKey: string;
   apiId: string;
+  defaultLanguage?: ChatLanguage;
   onClose: () => void;
 }
 
-export default function ChatInterface({ assistantId, assistantName, apiKey, apiId, onClose }: ChatInterfaceProps) {
+export default function ChatInterface({
+  assistantId,
+  assistantName,
+  apiKey,
+  apiId,
+  defaultLanguage = 'az',
+  onClose,
+}: ChatInterfaceProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputMessage, setInputMessage] = useState('');
+  const [language, setLanguage] = useState<ChatLanguage>(defaultLanguage);
   const [isLoading, setIsLoading] = useState(false);
   const [visitorId] = useState(() => `visitor-${apiId}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -104,6 +123,7 @@ export default function ChatInterface({ assistantId, assistantName, apiKey, apiI
           message: userMessage.content,
           assistant: assistantId,
           visitor_id: visitorId,
+          language,
           apiKey: apiKey.trim()
         })
       });
@@ -380,20 +400,25 @@ export default function ChatInterface({ assistantId, assistantName, apiKey, apiI
           </div>
         ) : (
           <>
-            {messages.map((message, index) => (
+            {messages.map((message, index) => {
+              const isTableMessage = message.role === 'assistant' && messageHasTable(message.content);
+
+              return (
               <div
                 key={message.id}
                 className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'} message-enter`}
                 style={{ animationDelay: `${index * 50}ms` }}
               >
                 <div
-                  className={`max-w-[80%] rounded-2xl px-5 py-3.5 shadow-lg ${
+                  className={`rounded-2xl px-5 py-3.5 shadow-lg ${
                     message.role === 'user'
-                      ? 'bg-gradient-to-br from-indigo-600 to-indigo-700 text-white'
-                      : 'bg-slate-800/90 backdrop-blur text-slate-100 border border-slate-700/50'
+                      ? 'max-w-[80%] bg-gradient-to-br from-indigo-600 to-indigo-700 text-white'
+                      : isTableMessage
+                        ? 'w-full max-w-full bg-slate-800/90 backdrop-blur text-slate-100 border border-slate-700/50'
+                        : 'max-w-[85%] bg-slate-800/90 backdrop-blur text-slate-100 border border-slate-700/50'
                   } transition-all duration-200 hover:shadow-xl`}
                 >
-                  <p className="whitespace-pre-wrap break-words leading-relaxed">{message.content}</p>
+                  <ChatMessageContent content={message.content} variant={message.role} />
                   
                   {/* Display sources if available */}
                   {message.sources && message.sources.length > 0 && (
@@ -431,7 +456,8 @@ export default function ChatInterface({ assistantId, assistantName, apiKey, apiI
                   </span>
                 </div>
               </div>
-            ))}
+            );
+            })}
             {isLoading && (
               <div className="flex justify-start">
                 <div className="bg-slate-800 border border-slate-700 rounded-2xl px-4 py-3">
@@ -450,6 +476,24 @@ export default function ChatInterface({ assistantId, assistantName, apiKey, apiI
 
       {/* Input Area */}
       <div className="border-t border-slate-800 p-4 bg-slate-950/50">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <label htmlFor="chat-language" className="text-sm text-slate-400 shrink-0">
+            Cavab dili
+          </label>
+          <select
+            id="chat-language"
+            value={language}
+            onChange={(e) => setLanguage(e.target.value as ChatLanguage)}
+            disabled={isLoading}
+            className="bg-slate-800/90 border border-slate-700/50 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 disabled:opacity-50"
+          >
+            {CHAT_LANGUAGES.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </div>
         <div className="flex gap-3 items-end">
           <div className="flex-1 relative">
             <textarea

@@ -4,7 +4,7 @@ export async function POST(request: NextRequest) {
   try {
     // Parse request body
     const body = await request.json();
-    const { message, assistant, visitor_id, apiKey } = body;
+    const { message, assistant, visitor_id, apiKey, language } = body;
 
     // Validate required fields
     if (!message || !assistant || !apiKey) {
@@ -19,12 +19,16 @@ export async function POST(request: NextRequest) {
 
     // Prepare request payload according to API documentation
     // Required fields: message, assistant (share_link)
-    // Optional: visitor_id
-    const requestPayload = {
+    // Optional: visitor_id, language (e.g. az, en, tr, ru)
+    const requestPayload: Record<string, string> = {
       message: message.trim(),
       assistant: assistant.trim(), // This should be the assistant's share_link
       visitor_id: visitor_id || `visitor-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
     };
+
+    if (typeof language === 'string' && language.trim()) {
+      requestPayload.language = language.trim();
+    }
 
     // External API endpoint - according to documentation it's /api/chat (NOT /api/v1/chat)
     const apiUrl = process.env.NEXT_PUBLIC_CHAT_API_URL || 'https://www.purescan.info/api/chat';
@@ -44,6 +48,7 @@ export async function POST(request: NextRequest) {
       assistantLength: assistant.length,
       hasVisitorId: !!visitor_id,
       visitorId: visitor_id,
+      language: requestPayload.language || '(not set)',
       hasApiKey: !!apiKey,
       apiKeyPreview: apiKey ? `${apiKey.substring(0, 12)}...` : 'MISSING',
       apiKeyLength: apiKey?.length || 0,

@@ -3,9 +3,10 @@
 import { useState, useEffect } from 'react';
 
 export default function TestAPIPage() {
-  const [assistant, setAssistant] = useState('əmək-məcələsi-1760266330650');
+  const [assistant, setAssistant] = useState('my-assistant-1780156778831');
   const [apiKey, setApiKey] = useState('');
   const [message, setMessage] = useState('Hello, this is a test message');
+  const [language, setLanguage] = useState('az');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<any>(null);
 
@@ -49,7 +50,8 @@ export default function TestAPIPage() {
           body: JSON.stringify({
             assistant,
             apiKey,
-            message
+            message,
+            language
           })
         });
         const data = await response.json();
@@ -82,7 +84,7 @@ export default function TestAPIPage() {
               value={assistant}
               onChange={(e) => setAssistant(e.target.value)}
               className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-900 bg-white"
-              placeholder="e.g., əmək-məcələsi-1760266330650"
+              placeholder="e.g., my-assistant-1780156778831"
             />
           </div>
 
@@ -100,6 +102,22 @@ export default function TestAPIPage() {
             <p className="mt-2 text-sm text-gray-600">
               API key should start with <code className="bg-gray-200 px-2 py-1 rounded font-mono text-gray-800">sk_</code> and be at least 35 characters
             </p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Language
+            </label>
+            <select
+              value={language}
+              onChange={(e) => setLanguage(e.target.value)}
+              className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-gray-900 bg-white"
+            >
+              <option value="az">Azərbaycan (az)</option>
+              <option value="en">English (en)</option>
+              <option value="tr">Türkçe (tr)</option>
+              <option value="ru">Русский (ru)</option>
+            </select>
           </div>
 
           <div>
@@ -275,7 +293,7 @@ export default function TestAPIPage() {
         <div className="mt-8 p-5 bg-blue-50 border-2 border-blue-300 rounded-xl">
           <h3 className="font-semibold mb-3 text-blue-900">How to Use:</h3>
           <ol className="list-decimal list-inside space-y-2 text-sm text-gray-800">
-            <li>Enter your Assistant ID (share_link) - e.g., <code className="bg-white px-2 py-1 rounded font-mono text-blue-700 border border-blue-200">əmək-məcələsi-1760266330650</code></li>
+            <li>Enter your Assistant ID (share_link) - e.g., <code className="bg-white px-2 py-1 rounded font-mono text-blue-700 border border-blue-200">my-assistant-1780156778831</code></li>
             <li>Enter your API Key (starts with <code className="bg-white px-2 py-1 rounded font-mono text-blue-700 border border-blue-200">sk_</code>)</li>
             <li>Click <strong className="text-blue-900">"1. Verify Setup"</strong> to check if your API key format is correct and test the connection</li>
             <li>Click <strong className="text-blue-900">"2. Test Chat API"</strong> to send a test message and see the full API response</li>

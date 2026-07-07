@@ -7,7 +7,7 @@ import { NextRequest, NextResponse } from 'next/server';
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { message = 'Hello, this is a test message', assistant, apiKey } = body;
+    const { message = 'Hello, this is a test message', assistant, apiKey, language } = body;
 
     if (!assistant || !apiKey) {
       return NextResponse.json({
@@ -25,11 +25,15 @@ export async function POST(request: NextRequest) {
     console.log('[Test] API Key format:', apiKey.startsWith('sk_') ? 'VALID' : 'INVALID');
     console.log('[Test] API Key length:', apiKey.length);
 
-    const requestPayload = {
+    const requestPayload: Record<string, string> = {
       message: message.trim(),
       assistant: assistant.trim(),
       visitor_id: `test-visitor-${Date.now()}`
     };
+
+    if (typeof language === 'string' && language.trim()) {
+      requestPayload.language = language.trim();
+    }
 
     // Test 1: Basic request
     console.log('[Test] Sending test request...');

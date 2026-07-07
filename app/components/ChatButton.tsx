@@ -6,7 +6,7 @@ interface ChatButtonProps {
   assistantId?: string;
 }
 
-export default function ChatButton({ assistantId = 'əmək-məcələsi-1760266330650' }: ChatButtonProps) {
+export default function ChatButton({ assistantId = 'my-assistant-1780156778831' }: ChatButtonProps) {
   const [isOpen, setIsOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
