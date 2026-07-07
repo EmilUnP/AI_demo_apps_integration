@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { chatApiUrl, chatAuthHeaders } from '@/lib/chatApiServer';
 
 /**
  * Test endpoint to verify API integration
@@ -9,27 +10,30 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { message = 'Hello, this is a test message', assistant, apiKey, language } = body;
 
-    if (!assistant || !apiKey) {
+    if (!apiKey) {
       return NextResponse.json({
         success: false,
-        error: 'Missing required fields: assistant and apiKey are required',
+        error: 'Missing required field: apiKey is required',
         code: 'MISSING_FIELDS'
       }, { status: 400 });
     }
 
-    const apiUrl = process.env.NEXT_PUBLIC_CHAT_API_URL || 'https://www.purescan.info/api/chat';
+    const apiUrl = chatApiUrl('/chat');
     
     console.log('[Test] Testing API integration...');
     console.log('[Test] Endpoint:', apiUrl);
-    console.log('[Test] Assistant:', assistant);
+    console.log('[Test] Assistant:', assistant?.trim() || '(omitted — API key only)');
     console.log('[Test] API Key format:', apiKey.startsWith('sk_') ? 'VALID' : 'INVALID');
     console.log('[Test] API Key length:', apiKey.length);
 
     const requestPayload: Record<string, string> = {
       message: message.trim(),
-      assistant: assistant.trim(),
       visitor_id: `test-visitor-${Date.now()}`
     };
+
+    if (typeof assistant === 'string' && assistant.trim()) {
+      requestPayload.assistant = assistant.trim();
+    }
 
     if (typeof language === 'string' && language.trim()) {
       requestPayload.language = language.trim();
@@ -39,11 +43,7 @@ export async function POST(request: NextRequest) {
     console.log('[Test] Sending test request...');
     const response = await fetch(apiUrl, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey.trim()}`,
-        'Accept': 'application/json'
-      },
+      headers: chatAuthHeaders(apiKey),
       body: JSON.stringify(requestPayload)
     });
 

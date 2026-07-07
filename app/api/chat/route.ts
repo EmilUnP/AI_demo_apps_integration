@@ -1,54 +1,57 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { chatApiUrl, chatAuthHeaders } from '@/lib/chatApiServer';
 
 export async function POST(request: NextRequest) {
   try {
-    // Parse request body
     const body = await request.json();
-    const { message, assistant, visitor_id, apiKey, language } = body;
+    const { message, assistant, visitor_id, apiKey, language, conversation_id, user_name, user_email } = body;
 
-    // Validate required fields
-    if (!message || !assistant || !apiKey) {
+    // Validate required fields (assistant/share_link is optional when API key is bound to one assistant)
+    if (!message || !apiKey) {
       return NextResponse.json(
         { 
           error: 'Missing required fields',
-          details: 'message, assistant, and apiKey are required' 
+          details: 'message and apiKey are required' 
         },
         { status: 400 }
       );
     }
 
-    // Prepare request payload according to API documentation
-    // Required fields: message, assistant (share_link)
-    // Optional: visitor_id, language (e.g. az, en, tr, ru)
     const requestPayload: Record<string, string> = {
       message: message.trim(),
-      assistant: assistant.trim(), // This should be the assistant's share_link
-      visitor_id: visitor_id || `visitor-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+      visitor_id: visitor_id || `visitor-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
     };
+
+    if (typeof assistant === 'string' && assistant.trim()) {
+      requestPayload.assistant = assistant.trim();
+    }
 
     if (typeof language === 'string' && language.trim()) {
       requestPayload.language = language.trim();
     }
+    if (typeof conversation_id === 'string' && conversation_id.trim()) {
+      requestPayload.conversation_id = conversation_id.trim();
+    }
+    if (typeof user_name === 'string' && user_name.trim()) {
+      requestPayload.user_name = user_name.trim();
+    }
+    if (typeof user_email === 'string' && user_email.trim()) {
+      requestPayload.user_email = user_email.trim();
+    }
 
-    // External API endpoint - according to documentation it's /api/chat (NOT /api/v1/chat)
-    const apiUrl = process.env.NEXT_PUBLIC_CHAT_API_URL || 'https://www.purescan.info/api/chat';
-    
-    const headers = {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey.trim()}`, // Format: Bearer YOUR_API_KEY
-      'Accept': 'application/json'
-    };
+    const apiUrl = chatApiUrl('/chat');
 
     console.log('[API Proxy] ========================================');
     console.log('[API Proxy] Making request to:', apiUrl);
     console.log('[API Proxy] Request payload:', {
       messageLength: message.length,
       messagePreview: message.substring(0, 50) + (message.length > 50 ? '...' : ''),
-      assistant: assistant, // This should be the share_link
-      assistantLength: assistant.length,
+      assistant: requestPayload.assistant || '(omitted — API key only)',
+      assistantLength: requestPayload.assistant?.length || 0,
       hasVisitorId: !!visitor_id,
       visitorId: visitor_id,
       language: requestPayload.language || '(not set)',
+      conversationId: requestPayload.conversation_id || '(new)',
       hasApiKey: !!apiKey,
       apiKeyPreview: apiKey ? `${apiKey.substring(0, 12)}...` : 'MISSING',
       apiKeyLength: apiKey?.length || 0,
@@ -62,7 +65,7 @@ export async function POST(request: NextRequest) {
     try {
       response = await fetch(apiUrl, {
         method: 'POST',
-        headers: headers,
+        headers: chatAuthHeaders(apiKey),
         body: JSON.stringify(requestPayload)
       });
 

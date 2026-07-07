@@ -2,6 +2,14 @@
 
 import { useState, useRef, useEffect } from 'react';
 import ChatMessageContent, { messageHasTable } from './ChatMessageContent';
+import {
+  ChatUser,
+  fromStoredMessage,
+  loadStoredMessages,
+  saveStoredMessages,
+  toStoredMessage,
+  upsertConversationSummary,
+} from '@/lib/chatSession';
 
 interface Message {
   id: string;
@@ -9,6 +17,7 @@ interface Message {
   content: string;
   timestamp: Date;
   sources?: Array<{ title: string; url?: string; page?: string }>;
+  feedback?: 'up' | 'down';
 }
 
 const CHAT_LANGUAGES = [
@@ -22,26 +31,36 @@ type ChatLanguage = (typeof CHAT_LANGUAGES)[number]['value'];
 
 interface ChatInterfaceProps {
   assistantId: string;
+  /** PersonaAI share_link — only sent when set; API key alone can identify the assistant */
+  shareLink?: string;
   assistantName: string;
   apiKey: string;
   apiId: string;
   defaultLanguage?: ChatLanguage;
+  user: ChatUser | null;
+  conversationId: string | null;
+  onConversationIdChange: (conversationId: string | null) => void;
   onClose: () => void;
 }
 
 export default function ChatInterface({
   assistantId,
+  shareLink,
   assistantName,
   apiKey,
   apiId,
   defaultLanguage = 'az',
+  user,
+  conversationId,
+  onConversationIdChange,
   onClose,
 }: ChatInterfaceProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputMessage, setInputMessage] = useState('');
   const [language, setLanguage] = useState<ChatLanguage>(defaultLanguage);
   const [isLoading, setIsLoading] = useState(false);
-  const [visitorId] = useState(() => `visitor-${apiId}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`);
+  const [feedbackPendingId, setFeedbackPendingId] = useState<string | null>(null);
+  const visitorId = user?.visitorId || `guest-${apiId}-${Date.now()}`;
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -52,6 +71,84 @@ export default function ChatInterface({
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  useEffect(() => {
+    if (!conversationId) {
+      setMessages([]);
+      return;
+    }
+
+    const loadHistory = async () => {
+      const cached = loadStoredMessages(conversationId).map(fromStoredMessage);
+      if (cached.length > 0) setMessages(cached);
+
+      if (!apiKey) return;
+
+      try {
+        const params = new URLSearchParams({ apiKey });
+        const res = await fetch(`/api/chat/conversations/${encodeURIComponent(conversationId)}/messages?${params}`);
+        const data = await res.json();
+        const raw = data.data?.messages || data.data || [];
+        if (Array.isArray(raw) && raw.length > 0) {
+          const loaded: Message[] = raw.map((item: Record<string, string>, index: number) => ({
+            id: item.id || `remote-${index}`,
+            role: (item.role === 'assistant' ? 'assistant' : 'user') as Message['role'],
+            content: item.content || item.message || item.text || '',
+            timestamp: new Date(item.created_at || item.timestamp || Date.now()),
+            sources: undefined,
+          }));
+          setMessages(loaded);
+          saveStoredMessages(conversationId, loaded.map(toStoredMessage));
+        }
+      } catch {
+        // keep cache
+      }
+    };
+
+    loadHistory();
+  }, [conversationId, apiKey, assistantId]);
+
+  const persistConversation = (id: string, preview: string) => {
+    upsertConversationSummary({
+      id,
+      title: preview.slice(0, 48) || 'Söhbət',
+      preview: preview.slice(0, 120),
+      updatedAt: new Date().toISOString(),
+      assistantId,
+    });
+  };
+
+  const persistMessages = (id: string, nextMessages: Message[]) => {
+    saveStoredMessages(id, nextMessages.map(toStoredMessage));
+  };
+
+  const submitFeedback = async (message: Message, rating: 'up' | 'down') => {
+    if (!conversationId) return;
+    setFeedbackPendingId(message.id);
+
+    setMessages((prev) => {
+      const next = prev.map((m) => (m.id === message.id ? { ...m, feedback: rating } : m));
+      persistMessages(conversationId, next);
+      return next;
+    });
+
+    try {
+      await fetch('/api/chat/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          apiKey: apiKey.trim(),
+          conversation_id: conversationId,
+          message_id: message.id,
+          rating: rating === 'up' ? 5 : 1,
+        }),
+      });
+    } catch {
+      // saved locally on message either way
+    } finally {
+      setFeedbackPendingId(null);
+    }
+  };
 
   // Helper function to parse sources from different formats
   const parseSources = (sourceData: any): Array<{ title: string; url?: string; page?: string }> | undefined => {
@@ -104,7 +201,11 @@ export default function ChatInterface({
       timestamp: new Date()
     };
 
-    setMessages(prev => [...prev, userMessage]);
+    setMessages(prev => {
+      const next = [...prev, userMessage];
+      if (conversationId) persistMessages(conversationId, next);
+      return next;
+    });
     setInputMessage('');
     setIsLoading(true);
 
@@ -121,9 +222,12 @@ export default function ChatInterface({
         },
         body: JSON.stringify({
           message: userMessage.content,
-          assistant: assistantId,
+          ...(shareLink?.trim() ? { assistant: shareLink.trim() } : {}),
           visitor_id: visitorId,
           language,
+          conversation_id: conversationId || undefined,
+          user_name: user?.name,
+          user_email: user?.email,
           apiKey: apiKey.trim()
         })
       });
@@ -205,11 +309,20 @@ export default function ChatInterface({
 
       // Check if response follows the documented format
       if (data.success === true && data.data) {
-        // Success response format
         responseText = data.data.response || data.data.message || data.data.text || '';
         sources = parseSources(data.data.sources || data.data.source);
+
+        const returnedConversationId = data.data.conversation_id as string | undefined;
+        const activeConversationId = returnedConversationId || conversationId;
+
+        if (returnedConversationId && returnedConversationId !== conversationId) {
+          onConversationIdChange(returnedConversationId);
+        }
+
+        if (activeConversationId) {
+          persistConversation(activeConversationId, userMessage.content);
+        }
         
-        // Check for usage info in response
         if (data.data.usage) {
           console.log('API Usage:', data.data.usage);
         }
@@ -232,7 +345,7 @@ export default function ChatInterface({
         } else if (errorCode === 'UNAUTHORIZED') {
           userFriendlyMessage = 'API açarı bu köməkçi üçün icazə verilmir.';
         } else if (errorCode === 'ASSISTANT_NOT_FOUND') {
-          userFriendlyMessage = 'Köməkçi tapılmadı. Assistant ID-ni yoxlayın.';
+          userFriendlyMessage = 'Köməkçi tapılmadı. API açarını və köməkçi konfiqurasiyasını yoxlayın.';
         } else if (errorCode === 'MISSING_FIELDS') {
           userFriendlyMessage = 'Tələb olunan sahələr çatışmır.';
         } else if (errorCode === 'RATE_LIMIT_EXCEEDED') {
@@ -290,7 +403,12 @@ export default function ChatInterface({
           sources: sources
         };
 
-        setMessages(prev => [...prev, assistantMessage]);
+        setMessages(prev => {
+          const next = [...prev, assistantMessage];
+          const activeId = (data.success === true && data.data?.conversation_id) || conversationId;
+          if (activeId) persistMessages(activeId, next);
+          return next;
+        });
       } else if (!data.success) {
         // If it was an error response but no text extracted, show the error
         throw new Error(data.error || 'No response received from API');
@@ -331,7 +449,7 @@ export default function ChatInterface({
         } else if (parsedCode === 'UNAUTHORIZED' || parsedCode === '403') {
           errorMessageText = 'API açarı bu köməkçi üçün icazə verilmir.';
         } else if (parsedCode === 'ASSISTANT_NOT_FOUND' || parsedCode === '404') {
-          errorMessageText = 'Köməkçi tapılmadı. Assistant ID-ni yoxlayın.';
+          errorMessageText = 'Köməkçi tapılmadı. API açarını və köməkçi konfiqurasiyasını yoxlayın.';
         } else if (parsedCode === 'MISSING_FIELDS' || parsedCode === '400') {
           errorMessageText = 'Tələb olunan sahələr çatışmır.';
         } else if (parsedCode === 'RATE_LIMIT_EXCEEDED' || parsedCode === '429') {
@@ -383,9 +501,9 @@ export default function ChatInterface({
   }, [inputMessage]);
 
   return (
-    <div className="flex flex-col h-full bg-slate-900">
+    <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-slate-900">
       {/* Messages Area */}
-      <div className="flex-1 overflow-y-auto p-6 space-y-4">
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-6 space-y-4">
         {messages.length === 0 ? (
           <div className="flex items-center justify-center h-full">
             <div className="text-center">
@@ -448,6 +566,36 @@ export default function ChatInterface({
                       </div>
                     </div>
                   )}
+
+                  {message.role === 'assistant' && conversationId && (
+                    <div className="mt-3 flex items-center gap-2 border-t border-slate-700/50 pt-2">
+                      <span className="text-xs text-slate-500">Fikriniz:</span>
+                      <button
+                        type="button"
+                        disabled={feedbackPendingId === message.id}
+                        onClick={() => submitFeedback(message, 'up')}
+                        className={`rounded-md px-2 py-1 text-xs transition ${
+                          message.feedback === 'up'
+                            ? 'bg-emerald-600/30 text-emerald-300'
+                            : 'bg-slate-700/60 text-slate-300 hover:bg-slate-700'
+                        }`}
+                      >
+                        👍
+                      </button>
+                      <button
+                        type="button"
+                        disabled={feedbackPendingId === message.id}
+                        onClick={() => submitFeedback(message, 'down')}
+                        className={`rounded-md px-2 py-1 text-xs transition ${
+                          message.feedback === 'down'
+                            ? 'bg-red-600/30 text-red-300'
+                            : 'bg-slate-700/60 text-slate-300 hover:bg-slate-700'
+                        }`}
+                      >
+                        👎
+                      </button>
+                    </div>
+                  )}
                   
                   <span className={`text-xs mt-2 block ${
                     message.role === 'user' ? 'text-indigo-100/80' : 'text-slate-400'
@@ -475,7 +623,7 @@ export default function ChatInterface({
       </div>
 
       {/* Input Area */}
-      <div className="border-t border-slate-800 p-4 bg-slate-950/50">
+      <div className="shrink-0 border-t border-slate-800 p-4 bg-slate-950/50">
         <div className="mb-3 flex items-center justify-between gap-3">
           <label htmlFor="chat-language" className="text-sm text-slate-400 shrink-0">
             Cavab dili
@@ -494,8 +642,8 @@ export default function ChatInterface({
             ))}
           </select>
         </div>
-        <div className="flex gap-3 items-end">
-          <div className="flex-1 relative">
+        <div className="flex gap-3 items-end min-w-0">
+          <div className="flex-1 relative min-w-0">
             <textarea
               ref={inputRef}
               value={inputMessage}
