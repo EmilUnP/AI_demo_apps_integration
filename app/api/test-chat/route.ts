@@ -1,71 +1,48 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { chatApiUrl, chatAuthHeaders } from '@/lib/chatApiServer';
+import { chatApiUrl, chatAuthHeaders, parseJsonResponse, resolveAssistantShareLink } from '@/lib/chatApiServer';
 
-/**
- * Test endpoint to verify API integration
- * Use this to test if your API key and assistant ID work correctly
- */
+/** Test endpoint — POST /api/v1/chat via proxy */
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { message = 'Hello, this is a test message', assistant, apiKey, language } = body;
+    const {
+      message = 'Hello, this is a test message',
+      assistant,
+      apiKey,
+      language = 'az',
+      external_user_id,
+    } = body;
 
     if (!apiKey) {
       return NextResponse.json({
         success: false,
         error: 'Missing required field: apiKey is required',
-        code: 'MISSING_FIELDS'
+        code: 'MISSING_FIELDS',
       }, { status: 400 });
     }
 
-    const apiUrl = chatApiUrl('/chat');
-    
-    console.log('[Test] Testing API integration...');
-    console.log('[Test] Endpoint:', apiUrl);
-    console.log('[Test] Assistant:', assistant?.trim() || '(omitted — API key only)');
-    console.log('[Test] API Key format:', apiKey.startsWith('sk_') ? 'VALID' : 'INVALID');
-    console.log('[Test] API Key length:', apiKey.length);
-
-    const requestPayload: Record<string, string> = {
-      message: message.trim(),
-      visitor_id: `test-visitor-${Date.now()}`
+    const requestPayload: Record<string, unknown> = {
+      message: String(message).trim(),
+      language: String(language).trim(),
+      external_user_id: external_user_id || `test-user-${Date.now()}`,
+      new_conversation: true,
     };
 
-    if (typeof assistant === 'string' && assistant.trim()) {
-      requestPayload.assistant = assistant.trim();
-    }
+    const shareLink = resolveAssistantShareLink(assistant);
+    if (shareLink) requestPayload.assistant = shareLink;
 
-    if (typeof language === 'string' && language.trim()) {
-      requestPayload.language = language.trim();
-    }
+    const apiUrl = chatApiUrl('/v1/chat');
 
-    // Test 1: Basic request
-    console.log('[Test] Sending test request...');
+    console.log('[Test] POST', apiUrl, { assistant: shareLink || '(API key)' });
+
     const response = await fetch(apiUrl, {
       method: 'POST',
       headers: chatAuthHeaders(apiKey),
-      body: JSON.stringify(requestPayload)
+      body: JSON.stringify(requestPayload),
     });
 
-    const contentType = response.headers.get('content-type') || '';
-    const responseText = await response.text();
+    const parsedResponse = await parseJsonResponse(response);
 
-    console.log('[Test] Response Status:', response.status);
-    console.log('[Test] Response Headers:', {
-      'content-type': contentType,
-      'x-ratelimit-remaining': response.headers.get('x-ratelimit-remaining'),
-      'x-ratelimit-reset': response.headers.get('x-ratelimit-reset')
-    });
-    console.log('[Test] Raw Response:', responseText.substring(0, 500));
-
-    let parsedResponse: any;
-    try {
-      parsedResponse = JSON.parse(responseText);
-    } catch {
-      parsedResponse = { raw: responseText };
-    }
-
-    // Return detailed test results
     return NextResponse.json({
       success: response.ok,
       testResults: {
@@ -74,47 +51,26 @@ export async function POST(request: NextRequest) {
         response: {
           status: response.status,
           statusText: response.statusText,
-          headers: {
-            'content-type': contentType,
-            'x-ratelimit-remaining': response.headers.get('x-ratelimit-remaining'),
-            'x-ratelimit-reset': response.headers.get('x-ratelimit-reset')
-          },
-          body: parsedResponse
+          body: parsedResponse,
         },
         apiKey: {
           format: apiKey.startsWith('sk_') ? 'VALID' : 'INVALID',
           length: apiKey.length,
-          preview: `${apiKey.substring(0, 12)}...`
+          preview: `${apiKey.substring(0, 12)}...`,
         },
-        assistant: {
-          id: assistant,
-          length: assistant.length
-        }
       },
       diagnostics: {
-        networkError: false,
-        parseError: false,
         apiError: !response.ok,
-        errorDetails: response.ok ? null : parsedResponse
-      }
+        errorDetails: response.ok ? null : parsedResponse,
+      },
     }, { status: 200 });
-
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'Test failed';
     console.error('[Test] Error:', error);
     return NextResponse.json({
       success: false,
-      error: error.message || 'Test failed',
+      error: message,
       code: 'TEST_ERROR',
-      diagnostics: {
-        networkError: error.message?.includes('fetch') || error.message?.includes('network'),
-        parseError: error.message?.includes('JSON'),
-        apiError: false,
-        errorDetails: {
-          message: error.message,
-          stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-        }
-      }
     }, { status: 500 });
   }
 }
-

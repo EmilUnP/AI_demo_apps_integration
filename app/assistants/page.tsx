@@ -14,12 +14,10 @@ interface Assistant {
   image: string;
   apiKey: string;
   apiId: string;
-  /** Optional PersonaAI share_link — omitted when API key alone identifies the assistant */
-  shareLink?: string;
 }
 
 const defaultApiKey = process.env.NEXT_PUBLIC_API_KEY || '';
-const defaultShareLink = process.env.NEXT_PUBLIC_ASSISTANT_SHARE_LINK?.trim() || undefined;
+const personaAiGuideName = process.env.NEXT_PUBLIC_ASSISTANT_NAME?.trim() || 'PersonaAI Guide';
 
 const getApiKey = (index: number) => {
   if (defaultApiKey) return defaultApiKey;
@@ -34,13 +32,12 @@ const getApiKey = (index: number) => {
 
 const assistants: Assistant[] = [
   {
-    id: 'pulse-phone',
-    name: 'Pulse Phone',
-    description: 'Əmək Məcələsi',
+    id: 'personaai-guide',
+    name: personaAiGuideName,
+    description: process.env.NEXT_PUBLIC_ASSISTANT_DESCRIPTION?.trim() || 'PersonaAI söhbət köməkçisi',
     image: '/assistants/assistant-purple.png',
     apiKey: getApiKey(0),
     apiId: '1',
-    shareLink: defaultShareLink,
   },
   {
     id: 'serp',
@@ -72,6 +69,7 @@ export default function AssistantsPage() {
   const [user, setUser] = useState<ChatUser | null>(null);
   const [selectedAssistantId, setSelectedAssistantId] = useState<string | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(null);
+  const [historyRefresh, setHistoryRefresh] = useState(0);
 
   const selectedAssistant = useMemo(
     () => assistants.find((a) => a.id === selectedAssistantId) ?? null,
@@ -176,10 +174,10 @@ export default function AssistantsPage() {
               <div className="h-36 shrink-0 overflow-hidden border-b border-slate-800 lg:h-auto lg:w-[220px] lg:border-b-0 lg:border-r">
                 <ChatHistorySidebar
                   assistantId={selectedAssistant.id}
-                  shareLink={selectedAssistant.shareLink}
                   apiKey={selectedAssistant.apiKey}
                   user={user}
                   activeConversationId={conversationId}
+                  refreshKey={historyRefresh}
                   onSelectConversation={setConversationId}
                   onConversationsChange={() => {}}
                 />
@@ -187,13 +185,13 @@ export default function AssistantsPage() {
               <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
                 <ChatInterface
                   assistantId={selectedAssistant.id}
-                  shareLink={selectedAssistant.shareLink}
                   assistantName={selectedAssistant.name}
                   apiKey={selectedAssistant.apiKey}
                   apiId={selectedAssistant.apiId}
                   user={user}
                   conversationId={conversationId}
                   onConversationIdChange={setConversationId}
+                  onSessionCompleted={() => setHistoryRefresh((k) => k + 1)}
                   onClose={() => setSelectedAssistantId(null)}
                 />
               </div>

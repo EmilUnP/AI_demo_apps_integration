@@ -10,6 +10,7 @@ export interface ConversationSummary {
   preview?: string;
   updatedAt: string;
   assistantId: string;
+  status?: 'active' | 'completed' | string;
 }
 
 export interface StoredMessage {

@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from 'react';
 import ChatMessageContent, { messageHasTable } from './ChatMessageContent';
 import {
   ChatUser,
+  ConversationSummary,
   fromStoredMessage,
   loadStoredMessages,
   saveStoredMessages,
@@ -17,7 +18,6 @@ interface Message {
   content: string;
   timestamp: Date;
   sources?: Array<{ title: string; url?: string; page?: string }>;
-  feedback?: 'up' | 'down';
 }
 
 const CHAT_LANGUAGES = [
@@ -31,7 +31,7 @@ type ChatLanguage = (typeof CHAT_LANGUAGES)[number]['value'];
 
 interface ChatInterfaceProps {
   assistantId: string;
-  /** PersonaAI share_link — only sent when set; API key alone can identify the assistant */
+  /** Optional legacy share_link — v1 resolves assistant from API key */
   shareLink?: string;
   assistantName: string;
   apiKey: string;
@@ -41,6 +41,7 @@ interface ChatInterfaceProps {
   conversationId: string | null;
   onConversationIdChange: (conversationId: string | null) => void;
   onClose: () => void;
+  onSessionCompleted?: () => void;
 }
 
 export default function ChatInterface({
@@ -54,12 +55,18 @@ export default function ChatInterface({
   conversationId,
   onConversationIdChange,
   onClose,
+  onSessionCompleted,
 }: ChatInterfaceProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputMessage, setInputMessage] = useState('');
   const [language, setLanguage] = useState<ChatLanguage>(defaultLanguage);
   const [isLoading, setIsLoading] = useState(false);
-  const [feedbackPendingId, setFeedbackPendingId] = useState<string | null>(null);
+  const [showSessionFeedback, setShowSessionFeedback] = useState(false);
+  const [sessionCompleted, setSessionCompleted] = useState(false);
+  const [feedbackRating, setFeedbackRating] = useState<number | null>(null);
+  const [feedbackText, setFeedbackText] = useState('');
+  const [isSubmittingFeedback, setIsSubmittingFeedback] = useState(false);
+  const [feedbackError, setFeedbackError] = useState('');
   const visitorId = user?.visitorId || `guest-${apiId}-${Date.now()}`;
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -75,6 +82,10 @@ export default function ChatInterface({
   useEffect(() => {
     if (!conversationId) {
       setMessages([]);
+      setSessionCompleted(false);
+      setShowSessionFeedback(false);
+      setFeedbackRating(null);
+      setFeedbackText('');
       return;
     }
 
@@ -88,15 +99,26 @@ export default function ChatInterface({
         const params = new URLSearchParams({ apiKey });
         const res = await fetch(`/api/chat/conversations/${encodeURIComponent(conversationId)}/messages?${params}`);
         const data = await res.json();
-        const raw = data.data?.messages || data.data || [];
+        const threadStatus = data.data?.status as string | undefined;
+        if (threadStatus === 'completed') {
+          setSessionCompleted(true);
+        } else {
+          setSessionCompleted(false);
+        }
+
+        const raw = data.data?.messages || [];
         if (Array.isArray(raw) && raw.length > 0) {
-          const loaded: Message[] = raw.map((item: Record<string, string>, index: number) => ({
-            id: item.id || `remote-${index}`,
-            role: (item.role === 'assistant' ? 'assistant' : 'user') as Message['role'],
-            content: item.content || item.message || item.text || '',
-            timestamp: new Date(item.created_at || item.timestamp || Date.now()),
-            sources: undefined,
-          }));
+          const loaded: Message[] = raw.map((item: Record<string, string>, index: number) => {
+            const isAssistant =
+              item.role === 'assistant' || item.sender === 'assistant';
+            return {
+              id: item.id || `remote-${index}`,
+              role: (isAssistant ? 'assistant' : 'user') as Message['role'],
+              content: item.content || item.message || item.text || '',
+              timestamp: new Date(item.created_at || item.timestamp || Date.now()),
+              sources: undefined,
+            };
+          });
           setMessages(loaded);
           saveStoredMessages(conversationId, loaded.map(toStoredMessage));
         }
@@ -108,13 +130,14 @@ export default function ChatInterface({
     loadHistory();
   }, [conversationId, apiKey, assistantId]);
 
-  const persistConversation = (id: string, preview: string) => {
+  const persistConversation = (id: string, preview: string, status: ConversationSummary['status'] = 'active') => {
     upsertConversationSummary({
       id,
       title: preview.slice(0, 48) || 'Söhbət',
       preview: preview.slice(0, 120),
       updatedAt: new Date().toISOString(),
       assistantId,
+      status,
     });
   };
 
@@ -122,32 +145,60 @@ export default function ChatInterface({
     saveStoredMessages(id, nextMessages.map(toStoredMessage));
   };
 
-  const submitFeedback = async (message: Message, rating: 'up' | 'down') => {
-    if (!conversationId) return;
-    setFeedbackPendingId(message.id);
+  const submitSessionFeedback = async (skipRating = false) => {
+    if (!conversationId || !apiKey) return;
 
-    setMessages((prev) => {
-      const next = prev.map((m) => (m.id === message.id ? { ...m, feedback: rating } : m));
-      persistMessages(conversationId, next);
-      return next;
-    });
+    if (!skipRating && feedbackRating == null) {
+      setFeedbackError('Zəhmət olmasa 1–5 ulduz seçin və ya "Qiymətləndirmədən bitir" düyməsini istifadə edin.');
+      return;
+    }
+
+    setIsSubmittingFeedback(true);
+    setFeedbackError('');
 
     try {
-      await fetch('/api/chat/feedback', {
+      const res = await fetch('/api/chat/feedback', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           apiKey: apiKey.trim(),
           conversation_id: conversationId,
-          message_id: message.id,
-          rating: rating === 'up' ? 5 : 1,
+          ...(skipRating
+            ? { skip_rating: true }
+            : {
+                rating: feedbackRating,
+                helpful: (feedbackRating ?? 0) >= 3,
+                ...(feedbackText.trim() ? { feedback_text: feedbackText.trim() } : {}),
+              }),
         }),
       });
-    } catch {
-      // saved locally on message either way
+
+      const data = await res.json();
+      if (!res.ok || data.success === false) {
+        throw new Error(data.error || 'Feedback göndərilmədi');
+      }
+
+      setSessionCompleted(true);
+      setShowSessionFeedback(false);
+      if (conversationId) {
+        persistConversation(conversationId, messages.find((m) => m.role === 'user')?.content || 'Söhbət', 'completed');
+      }
+      onSessionCompleted?.();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Feedback göndərilmədi';
+      setFeedbackError(msg);
     } finally {
-      setFeedbackPendingId(null);
+      setIsSubmittingFeedback(false);
     }
+  };
+
+  const handleStartNewAfterFeedback = () => {
+    setSessionCompleted(false);
+    setShowSessionFeedback(false);
+    setFeedbackRating(null);
+    setFeedbackText('');
+    setMessages([]);
+    onConversationIdChange(null);
   };
 
   // Helper function to parse sources from different formats
@@ -222,12 +273,12 @@ export default function ChatInterface({
         },
         body: JSON.stringify({
           message: userMessage.content,
-          ...(shareLink?.trim() ? { assistant: shareLink.trim() } : {}),
-          visitor_id: visitorId,
+          external_user_id: user?.visitorId || visitorId,
           language,
-          conversation_id: conversationId || undefined,
-          user_name: user?.name,
-          user_email: user?.email,
+          ...(conversationId
+            ? { conversation_id: conversationId }
+            : { new_conversation: true }),
+          ...(shareLink?.trim() ? { assistant: shareLink.trim() } : {}),
           apiKey: apiKey.trim()
         })
       });
@@ -346,8 +397,8 @@ export default function ChatInterface({
           userFriendlyMessage = 'API açarı bu köməkçi üçün icazə verilmir.';
         } else if (errorCode === 'ASSISTANT_NOT_FOUND') {
           userFriendlyMessage = 'Köməkçi tapılmadı. API açarını və köməkçi konfiqurasiyasını yoxlayın.';
-        } else if (errorCode === 'MISSING_FIELDS') {
-          userFriendlyMessage = 'Tələb olunan sahələr çatışmır.';
+        } else if (errorCode === 'MISSING_FIELDS' || errorCode === 'MISSING_SHARE_LINK') {
+          userFriendlyMessage = errorMessage;
         } else if (errorCode === 'RATE_LIMIT_EXCEEDED') {
           userFriendlyMessage = 'Sürət limiti aşılıb. Zəhmət olmasa bir az gözləyin.';
         }
@@ -450,8 +501,8 @@ export default function ChatInterface({
           errorMessageText = 'API açarı bu köməkçi üçün icazə verilmir.';
         } else if (parsedCode === 'ASSISTANT_NOT_FOUND' || parsedCode === '404') {
           errorMessageText = 'Köməkçi tapılmadı. API açarını və köməkçi konfiqurasiyasını yoxlayın.';
-        } else if (parsedCode === 'MISSING_FIELDS' || parsedCode === '400') {
-          errorMessageText = 'Tələb olunan sahələr çatışmır.';
+        } else if (parsedCode === 'MISSING_FIELDS' || parsedCode === 'MISSING_SHARE_LINK' || parsedCode === '400') {
+          errorMessageText = parsedMessage;
         } else if (parsedCode === 'RATE_LIMIT_EXCEEDED' || parsedCode === '429') {
           errorMessageText = 'Sürət limiti aşılıb. Zəhmət olmasa bir az gözləyin.';
         } else if (parsedCode === '500' || error.message.includes('500') || parsedMessage.includes('server error')) {
@@ -567,36 +618,6 @@ export default function ChatInterface({
                     </div>
                   )}
 
-                  {message.role === 'assistant' && conversationId && (
-                    <div className="mt-3 flex items-center gap-2 border-t border-slate-700/50 pt-2">
-                      <span className="text-xs text-slate-500">Fikriniz:</span>
-                      <button
-                        type="button"
-                        disabled={feedbackPendingId === message.id}
-                        onClick={() => submitFeedback(message, 'up')}
-                        className={`rounded-md px-2 py-1 text-xs transition ${
-                          message.feedback === 'up'
-                            ? 'bg-emerald-600/30 text-emerald-300'
-                            : 'bg-slate-700/60 text-slate-300 hover:bg-slate-700'
-                        }`}
-                      >
-                        👍
-                      </button>
-                      <button
-                        type="button"
-                        disabled={feedbackPendingId === message.id}
-                        onClick={() => submitFeedback(message, 'down')}
-                        className={`rounded-md px-2 py-1 text-xs transition ${
-                          message.feedback === 'down'
-                            ? 'bg-red-600/30 text-red-300'
-                            : 'bg-slate-700/60 text-slate-300 hover:bg-slate-700'
-                        }`}
-                      >
-                        👎
-                      </button>
-                    </div>
-                  )}
-                  
                   <span className={`text-xs mt-2 block ${
                     message.role === 'user' ? 'text-indigo-100/80' : 'text-slate-400'
                   }`}>
@@ -624,23 +645,108 @@ export default function ChatInterface({
 
       {/* Input Area */}
       <div className="shrink-0 border-t border-slate-800 p-4 bg-slate-950/50">
-        <div className="mb-3 flex items-center justify-between gap-3">
+        {sessionCompleted && (
+          <div className="mb-3 rounded-xl border border-emerald-800/50 bg-emerald-950/30 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+            <p className="text-sm text-emerald-300">Söhbət tamamlandı (status: completed).</p>
+            <button
+              type="button"
+              onClick={handleStartNewAfterFeedback}
+              className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500"
+            >
+              Yeni söhbət
+            </button>
+          </div>
+        )}
+
+        {showSessionFeedback && conversationId && !sessionCompleted && (
+          <div className="mb-3 rounded-xl border border-slate-700 bg-slate-900/80 px-4 py-4 space-y-3">
+            <p className="text-sm font-medium text-slate-200">Söhbəti qiymətləndirin</p>
+            <p className="text-xs text-slate-500">Bu, sessiyanı bitirir və köməkçiyə ümumi rəy verir.</p>
+            <div className="flex gap-1">
+              {[1, 2, 3, 4, 5].map((star) => (
+                <button
+                  key={star}
+                  type="button"
+                  onClick={() => setFeedbackRating(star)}
+                  className={`text-xl transition ${
+                    feedbackRating != null && star <= feedbackRating
+                      ? 'text-amber-400'
+                      : 'text-slate-600 hover:text-slate-400'
+                  }`}
+                  aria-label={`${star} ulduz`}
+                >
+                  ★
+                </button>
+              ))}
+            </div>
+            <textarea
+              value={feedbackText}
+              onChange={(e) => setFeedbackText(e.target.value)}
+              placeholder="Əlavə rəy (istəyə bağlı)..."
+              rows={2}
+              className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-indigo-500 focus:outline-none"
+            />
+            {feedbackError && <p className="text-xs text-red-400">{feedbackError}</p>}
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={isSubmittingFeedback}
+                onClick={() => submitSessionFeedback(false)}
+                className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
+              >
+                {isSubmittingFeedback ? 'Göndərilir...' : 'Göndər və bitir'}
+              </button>
+              <button
+                type="button"
+                disabled={isSubmittingFeedback}
+                onClick={() => submitSessionFeedback(true)}
+                className="rounded-lg border border-slate-600 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+              >
+                Qiymətləndirmədən bitir
+              </button>
+              <button
+                type="button"
+                disabled={isSubmittingFeedback}
+                onClick={() => {
+                  setShowSessionFeedback(false);
+                  setFeedbackError('');
+                }}
+                className="rounded-lg px-3 py-2 text-sm text-slate-500 hover:text-slate-300"
+              >
+                Ləğv et
+              </button>
+            </div>
+          </div>
+        )}
+
+        <div className="mb-3 flex items-center justify-between gap-3 flex-wrap">
           <label htmlFor="chat-language" className="text-sm text-slate-400 shrink-0">
             Cavab dili
           </label>
-          <select
-            id="chat-language"
-            value={language}
-            onChange={(e) => setLanguage(e.target.value as ChatLanguage)}
-            disabled={isLoading}
-            className="bg-slate-800/90 border border-slate-700/50 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 disabled:opacity-50"
-          >
-            {CHAT_LANGUAGES.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
+          <div className="flex items-center gap-2">
+            {conversationId && messages.length > 0 && !sessionCompleted && !showSessionFeedback && (
+              <button
+                type="button"
+                onClick={() => setShowSessionFeedback(true)}
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
+              >
+                Söhbəti bitir
+              </button>
+            )}
+            <select
+              id="chat-language"
+              value={language}
+              onChange={(e) => setLanguage(e.target.value as ChatLanguage)}
+              disabled={isLoading || sessionCompleted}
+              className="bg-slate-800/90 border border-slate-700/50 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 disabled:opacity-50"
+            >
+              {CHAT_LANGUAGES.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
         <div className="flex gap-3 items-end min-w-0">
           <div className="flex-1 relative min-w-0">
@@ -653,12 +759,12 @@ export default function ChatInterface({
               className="w-full bg-slate-800/90 backdrop-blur border border-slate-700/50 rounded-xl px-5 py-4 pr-14 text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 resize-none transition-all duration-200"
               rows={1}
               style={{ minHeight: '52px', maxHeight: '120px' }}
-              disabled={isLoading}
+              disabled={isLoading || sessionCompleted}
             />
           </div>
           <button
             onClick={sendMessage}
-            disabled={!inputMessage.trim() || isLoading}
+            disabled={!inputMessage.trim() || isLoading || sessionCompleted}
             className="px-7 py-4 bg-gradient-to-r from-indigo-600 to-indigo-700 text-white rounded-xl font-semibold hover:from-indigo-700 hover:to-indigo-800 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 min-w-[120px] justify-center shadow-lg hover:shadow-xl disabled:hover:shadow-lg"
           >
             {isLoading ? (
