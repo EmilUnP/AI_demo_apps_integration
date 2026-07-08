@@ -11,6 +11,8 @@ export async function POST(request: NextRequest) {
       apiKey,
       language = 'az',
       external_user_id,
+      external_user_name,
+      external_user_email,
     } = body;
 
     if (!apiKey) {
@@ -27,6 +29,13 @@ export async function POST(request: NextRequest) {
       external_user_id: external_user_id || `test-user-${Date.now()}`,
       new_conversation: true,
     };
+
+    if (typeof external_user_name === 'string' && external_user_name.trim()) {
+      requestPayload.external_user_name = external_user_name.trim();
+    }
+    if (typeof external_user_email === 'string' && external_user_email.trim()) {
+      requestPayload.external_user_email = external_user_email.trim();
+    }
 
     const shareLink = resolveAssistantShareLink(assistant);
     if (shareLink) requestPayload.assistant = shareLink;

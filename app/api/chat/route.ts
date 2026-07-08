@@ -13,11 +13,16 @@ export async function POST(request: NextRequest) {
       message,
       assistant,
       external_user_id,
+      external_user_name,
+      external_user_email,
       visitor_id,
       apiKey,
       language,
       conversation_id,
       new_conversation,
+      temperature,
+      max_tokens,
+      stream,
     } = body;
 
     if (!message || !apiKey) {
@@ -45,11 +50,27 @@ export async function POST(request: NextRequest) {
       undefined;
     if (externalUserId) requestPayload.external_user_id = externalUserId;
 
+    if (typeof external_user_name === 'string' && external_user_name.trim()) {
+      requestPayload.external_user_name = external_user_name.trim();
+    }
+    if (typeof external_user_email === 'string' && external_user_email.trim()) {
+      requestPayload.external_user_email = external_user_email.trim();
+    }
+
     if (typeof conversation_id === 'string' && conversation_id.trim()) {
       requestPayload.conversation_id = conversation_id.trim();
     }
     if (new_conversation === true) {
       requestPayload.new_conversation = true;
+    }
+    if (typeof temperature === 'number' && Number.isFinite(temperature)) {
+      requestPayload.temperature = temperature;
+    }
+    if (typeof max_tokens === 'number' && Number.isFinite(max_tokens)) {
+      requestPayload.max_tokens = max_tokens;
+    }
+    if (stream === true) {
+      requestPayload.stream = true;
     }
 
     const shareLink = resolveAssistantShareLink(assistant);

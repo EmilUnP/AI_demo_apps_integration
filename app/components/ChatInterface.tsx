@@ -274,6 +274,8 @@ export default function ChatInterface({
         body: JSON.stringify({
           message: userMessage.content,
           external_user_id: user?.visitorId || visitorId,
+          ...(user?.name?.trim() ? { external_user_name: user.name.trim() } : {}),
+          ...(user?.email?.trim() ? { external_user_email: user.email.trim() } : {}),
           language,
           ...(conversationId
             ? { conversation_id: conversationId }

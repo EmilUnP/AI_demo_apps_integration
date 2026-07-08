@@ -120,6 +120,15 @@ export default function AssistantsPage() {
           onLogout={handleLogout}
         />
 
+        {user && (
+          <p className="text-xs text-slate-500">
+            Söhbət zamanı API-yə göndərilir:{' '}
+            <code className="rounded bg-slate-900 px-1">external_user_id</code> = {user.visitorId},{' '}
+            <code className="rounded bg-slate-900 px-1">external_user_name</code> = {user.name},{' '}
+            <code className="rounded bg-slate-900 px-1">external_user_email</code> = {user.email}
+          </p>
+        )}
+
         <div>
           <h2 className="mb-3 text-sm font-medium text-slate-400">Köməkçilər</h2>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
