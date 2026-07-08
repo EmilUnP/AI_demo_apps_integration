@@ -67,9 +67,14 @@ export default function ChatInterface({
   const [feedbackText, setFeedbackText] = useState('');
   const [isSubmittingFeedback, setIsSubmittingFeedback] = useState(false);
   const [feedbackError, setFeedbackError] = useState('');
+  const [ttsPlayingId, setTtsPlayingId] = useState<string | null>(null);
+  const [ttsLoadingId, setTtsLoadingId] = useState<string | null>(null);
+  const [ttsError, setTtsError] = useState('');
   const visitorId = user?.visitorId || `guest-${apiId}-${Date.now()}`;
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioObjectUrlRef = useRef<string | null>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -80,12 +85,36 @@ export default function ChatInterface({
   }, [messages]);
 
   useEffect(() => {
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+      if (audioObjectUrlRef.current) {
+        URL.revokeObjectURL(audioObjectUrlRef.current);
+        audioObjectUrlRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     if (!conversationId) {
       setMessages([]);
       setSessionCompleted(false);
       setShowSessionFeedback(false);
       setFeedbackRating(null);
       setFeedbackText('');
+      setTtsPlayingId(null);
+      setTtsLoadingId(null);
+      setTtsError('');
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+      if (audioObjectUrlRef.current) {
+        URL.revokeObjectURL(audioObjectUrlRef.current);
+        audioObjectUrlRef.current = null;
+      }
       return;
     }
 
@@ -240,6 +269,77 @@ export default function ChatInterface({
     }
     
     return undefined;
+  };
+
+  const playAssistantTts = async (message: Message) => {
+    if (!message.content.trim() || !apiKey.trim()) return;
+
+    if (ttsPlayingId === message.id && audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+      setTtsPlayingId(null);
+      return;
+    }
+
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+    if (audioObjectUrlRef.current) {
+      URL.revokeObjectURL(audioObjectUrlRef.current);
+      audioObjectUrlRef.current = null;
+    }
+
+    setTtsError('');
+    setTtsLoadingId(message.id);
+
+    try {
+      const response = await fetch('/api/chat/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: message.content,
+          language,
+          apiKey: apiKey.trim(),
+          ...(shareLink?.trim() ? { assistant: shareLink.trim() } : {}),
+        }),
+      });
+
+      const contentType = response.headers.get('content-type') || '';
+      if (!response.ok) {
+        let errorText = `TTS failed (${response.status})`;
+        if (contentType.includes('application/json')) {
+          const err = await response.json().catch(() => null);
+          errorText =
+            (err && typeof err === 'object' && ('error' in err || 'message' in err)
+              ? String((err as { error?: string; message?: string }).error || (err as { message?: string }).message)
+              : errorText) || errorText;
+        }
+        throw new Error(errorText);
+      }
+
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      audioObjectUrlRef.current = objectUrl;
+
+      const audio = new Audio(objectUrl);
+      audioRef.current = audio;
+      audio.onended = () => {
+        setTtsPlayingId(null);
+      };
+      audio.onerror = () => {
+        setTtsPlayingId(null);
+        setTtsError('Audio oxuna bilmədi.');
+      };
+
+      setTtsPlayingId(message.id);
+      await audio.play();
+    } catch (error: unknown) {
+      setTtsPlayingId(null);
+      setTtsError(error instanceof Error ? error.message : 'TTS xətası');
+    } finally {
+      setTtsLoadingId(null);
+    }
   };
 
   const sendMessage = async () => {
@@ -620,11 +720,48 @@ export default function ChatInterface({
                     </div>
                   )}
 
-                  <span className={`text-xs mt-2 block ${
-                    message.role === 'user' ? 'text-indigo-100/80' : 'text-slate-400'
+                  <div className={`mt-2 flex items-center gap-2 ${
+                    message.role === 'user' ? 'justify-end' : 'justify-between'
                   }`}>
-                    {message.timestamp.toLocaleTimeString('az-AZ', { hour: '2-digit', minute: '2-digit' })}
-                  </span>
+                    <span className={`text-xs ${
+                      message.role === 'user' ? 'text-indigo-100/80' : 'text-slate-400'
+                    }`}>
+                      {message.timestamp.toLocaleTimeString('az-AZ', { hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                    {message.role === 'assistant' && message.content.trim() && (
+                      <button
+                        type="button"
+                        onClick={() => void playAssistantTts(message)}
+                        disabled={ttsLoadingId === message.id || sessionCompleted}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-600/80 bg-slate-900/60 px-2.5 py-1 text-xs text-slate-300 hover:bg-slate-800 hover:text-white disabled:opacity-50"
+                        title={`Səsli oxu (${language}, female)`}
+                      >
+                        {ttsLoadingId === message.id ? (
+                          <>
+                            <svg className="h-3.5 w-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                            </svg>
+                            Yüklənir
+                          </>
+                        ) : ttsPlayingId === message.id ? (
+                          <>
+                            <svg className="h-3.5 w-3.5" fill="currentColor" viewBox="0 0 24 24">
+                              <path d="M6 5h4v14H6V5zm8 0h4v14h-4V5z" />
+                            </svg>
+                            Dayandır
+                          </>
+                        ) : (
+                          <>
+                            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072M12 6v12m0-12a3 3 0 000 6m0 0a3 3 0 000 6m-7-6h1m14 0h1" />
+                            </svg>
+                            Dinlə
+                          </>
+                        )}
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
             );
@@ -750,6 +887,9 @@ export default function ChatInterface({
             </select>
           </div>
         </div>
+        {ttsError && (
+          <p className="mb-2 text-xs text-red-400">{ttsError}</p>
+        )}
         <div className="flex gap-3 items-end min-w-0">
           <div className="flex-1 relative min-w-0">
             <textarea
