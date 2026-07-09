@@ -229,10 +229,10 @@ export default function AssistantsPage() {
                 <h3 className="text-sm font-medium text-white">{selectedAssistant.name}</h3>
                 <p className="text-xs text-slate-500">
                   {taskModeActive
-                    ? 'Task mode · tickets & slash commands'
+                    ? 'Task · TASK_API_KEY · external_user_id tələb olunur'
                     : conversationId
-                      ? `Söhbət · ${conversationId.slice(0, 8)}…`
-                      : 'Yeni söhbət'}
+                      ? `Chat · ${conversationId.slice(0, 8)}…`
+                      : 'Chat · yeni söhbət'}
                 </p>
               </div>
               {selectedAssistant.supportsTaskMode && (
@@ -280,6 +280,7 @@ export default function AssistantsPage() {
                   taskApiKey={selectedAssistant.taskApiKey}
                   assistantMode={assistantMode}
                   apiId={selectedAssistant.apiId}
+                  defaultLanguage={taskModeActive ? 'auto' : 'az'}
                   user={user}
                   conversationId={conversationId}
                   apiTestOptions={apiTestOptions}

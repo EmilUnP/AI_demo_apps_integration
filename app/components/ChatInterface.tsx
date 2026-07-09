@@ -18,7 +18,7 @@ import {
   resolveApiKeyForMode,
   TASK_QUICK_COMMANDS,
 } from '@/lib/assistantMode';
-import { parseTaskCommandFromResponse, TaskCommandData } from '@/lib/taskCommand';
+import { parseTaskCommandFromResponse, resolveTaskDisplayContent, TaskCommandData } from '@/lib/taskCommand';
 import TaskCommandView from './TaskCommandView';
 
 interface Message {
@@ -31,6 +31,7 @@ interface Message {
 }
 
 const CHAT_LANGUAGES = [
+  { value: 'auto', label: 'Auto' },
   { value: 'az', label: 'Azərbaycan' },
   { value: 'en', label: 'English' },
   { value: 'tr', label: 'Türkçe' },
@@ -253,20 +254,6 @@ export default function ChatInterface({
   const handlePrefillTaskCommand = (message: string) => {
     setInputMessage(message);
     inputRef.current?.focus();
-  };
-
-  const resolveTaskDisplayContent = (
-    responseText: string,
-    taskCommand: TaskCommandData | null
-  ): string => {
-    if (!taskCommand) return responseText.trim();
-    const cmd = (taskCommand.command || '').toLowerCase();
-    if ((cmd === 'taskinfo' || cmd === 'tasks') && taskCommand.tasks?.length) return '';
-    if (cmd === 'newtask' && taskCommand.task) return '';
-    if (cmd === 'taskstatus' && taskCommand.task) return '';
-    if (cmd === 'categories' && taskCommand.categories?.length) return '';
-    if (cmd === 'taskcomment') return '';
-    return responseText.trim();
   };
 
   const handleCloseConversation = () => {
@@ -791,7 +778,7 @@ export default function ChatInterface({
               </h3>
               <p className="text-slate-400 max-w-sm mx-auto">
                 {isTaskMode
-                  ? 'Slash əmrləri (/help, /tasks) və ya təbii dil ilə ticket yaradın. Eyni external_user_id Chat rejimində də istifadə olunur.'
+                  ? 'Slash əmrləri (/help, /taskinfo) və ya təbii dil. Task rejimində eyni external_user_id istifadə olunur; ticketlər conversation_id-dən asılı deyil.'
                   : `Sualınızı yazın və ${assistantName} cavab versin`}
               </p>
             </div>
@@ -1075,7 +1062,7 @@ export default function ChatInterface({
               onKeyPress={handleKeyPress}
               placeholder={
                 isTaskMode
-                  ? '/help, /newtask billing …, və ya təbii dil ilə ticket'
+                  ? '/help, /newtask billing …, /taskstatus 1042, və ya təbii dil'
                   : 'Mesajınızı yazın...'
               }
               className="w-full bg-slate-800/90 backdrop-blur border border-slate-700/50 rounded-xl px-5 py-4 pr-14 text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 resize-none transition-all duration-200"

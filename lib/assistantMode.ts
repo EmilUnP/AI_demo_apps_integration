@@ -17,19 +17,19 @@ export const TASK_QUICK_COMMANDS: TaskQuickAction[] = [
   {
     label: '/taskstatus',
     message: '/taskstatus ',
-    hint: 'Status for one ticket — add task UUID',
+    hint: 'Status — /taskstatus #1042 or UUID',
     fillInput: true,
   },
   {
     label: '/newtask',
     message: '/newtask ',
-    hint: 'Create ticket — /newtask <category> <description>',
+    hint: 'Create — /newtask <category> <description>',
     fillInput: true,
   },
   {
     label: '/taskcomment',
     message: '/taskcomment ',
-    hint: 'Add update — /taskcomment <task_id> <text>',
+    hint: 'Comment — /taskcomment #1042 <text>',
     fillInput: true,
   },
 ];
