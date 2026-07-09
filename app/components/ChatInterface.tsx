@@ -11,6 +11,8 @@ import {
   toStoredMessage,
   upsertConversationSummary,
 } from '@/lib/chatSession';
+import { AssistantsApiTestOptions } from '@/lib/assistantsApiTestOptions';
+import { ApiTestDebugInfo, extractTestDebug } from '@/lib/assistantsApiTestLog';
 
 interface Message {
   id: string;
@@ -39,7 +41,9 @@ interface ChatInterfaceProps {
   defaultLanguage?: ChatLanguage;
   user: ChatUser | null;
   conversationId: string | null;
+  apiTestOptions: AssistantsApiTestOptions;
   onConversationIdChange: (conversationId: string | null) => void;
+  onRequestLogged?: (entry: ApiTestDebugInfo) => void;
   onClose: () => void;
   onSessionCompleted?: () => void;
 }
@@ -53,7 +57,9 @@ export default function ChatInterface({
   defaultLanguage = 'az',
   user,
   conversationId,
+  apiTestOptions,
   onConversationIdChange,
+  onRequestLogged,
   onClose,
   onSessionCompleted,
 }: ChatInterfaceProps) {
@@ -299,9 +305,11 @@ export default function ChatInterface({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           text: message.content,
-          language,
           apiKey: apiKey.trim(),
+          ...(apiTestOptions.includeTtsLanguage ? { language } : {}),
           ...(shareLink?.trim() ? { assistant: shareLink.trim() } : {}),
+          apiTestOptions,
+          includeTestDebug: true,
         }),
       });
 
@@ -309,7 +317,9 @@ export default function ChatInterface({
       if (!response.ok) {
         let errorText = `TTS failed (${response.status})`;
         if (contentType.includes('application/json')) {
-          const err = await response.json().catch(() => null);
+          const errPayload = await response.json().catch(() => null);
+          const { debug, data: err } = extractTestDebug(errPayload);
+          if (debug) onRequestLogged?.(debug);
           errorText =
             (err && typeof err === 'object' && ('error' in err || 'message' in err)
               ? String((err as { error?: string; message?: string }).error || (err as { message?: string }).message)
@@ -318,7 +328,28 @@ export default function ChatInterface({
         throw new Error(errorText);
       }
 
-      const blob = await response.blob();
+      let blob: Blob;
+      if (contentType.includes('application/json')) {
+        const payload = await response.json();
+        const { debug, data } = extractTestDebug(payload);
+        if (debug) onRequestLogged?.(debug);
+        const audioBase64 =
+          data && typeof data === 'object' && 'audioBase64' in data
+            ? String((data as { audioBase64?: string }).audioBase64 || '')
+            : '';
+        if (!audioBase64) throw new Error('TTS audio missing in response');
+        const binary = atob(audioBase64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+        blob = new Blob([bytes], {
+          type:
+            data && typeof data === 'object' && 'audioContentType' in data
+              ? String((data as { audioContentType?: string }).audioContentType || 'audio/mpeg')
+              : 'audio/mpeg',
+        });
+      } else {
+        blob = await response.blob();
+      }
       const objectUrl = URL.createObjectURL(blob);
       audioObjectUrlRef.current = objectUrl;
 
@@ -366,23 +397,35 @@ export default function ChatInterface({
       }
 
       // Use Next.js API route to proxy the request and avoid CORS issues
+      const proxyBody = {
+        message: userMessage.content,
+        ...(apiTestOptions.includeExternalUserId
+          ? { external_user_id: user?.visitorId || visitorId }
+          : {}),
+        ...(apiTestOptions.includeExternalUserName && user?.name?.trim()
+          ? { external_user_name: user.name.trim() }
+          : {}),
+        ...(apiTestOptions.includeExternalUserEmail && user?.email?.trim()
+          ? { external_user_email: user.email.trim() }
+          : {}),
+        ...(apiTestOptions.includeChatLanguage ? { language } : {}),
+        ...(apiTestOptions.includeConversationMemory
+          ? conversationId
+            ? { conversation_id: conversationId }
+            : { new_conversation: true }
+          : {}),
+        ...(shareLink?.trim() ? { assistant: shareLink.trim() } : {}),
+        apiKey: apiKey.trim(),
+        apiTestOptions,
+        includeTestDebug: true,
+      };
+
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({
-          message: userMessage.content,
-          external_user_id: user?.visitorId || visitorId,
-          ...(user?.name?.trim() ? { external_user_name: user.name.trim() } : {}),
-          ...(user?.email?.trim() ? { external_user_email: user.email.trim() } : {}),
-          language,
-          ...(conversationId
-            ? { conversation_id: conversationId }
-            : { new_conversation: true }),
-          ...(shareLink?.trim() ? { assistant: shareLink.trim() } : {}),
-          apiKey: apiKey.trim()
-        })
+        body: JSON.stringify(proxyBody)
       });
 
 
@@ -392,7 +435,10 @@ export default function ChatInterface({
         let errorCode = '';
         
         try {
-          const errorData = await response.json();
+          const errorPayload = await response.json();
+          const { debug, data: errorRaw } = extractTestDebug(errorPayload);
+          const errorData = (errorRaw ?? errorPayload ?? {}) as any;
+          if (debug) onRequestLogged?.(debug);
           console.error('API Error Response:', errorData);
           
           // Handle different error formats
@@ -412,7 +458,9 @@ export default function ChatInterface({
           } else if (errorData.success === false) {
             // API documentation format: { success: false, error: "...", code: "..." }
             errorCode = errorData.code || '';
-            errorDetails = errorData.error || errorData.message || 'Unknown error';
+            errorDetails = typeof errorData.error === 'string'
+              ? errorData.error
+              : errorData.message || 'Unknown error';
           } else if (errorData.error) {
             errorDetails = typeof errorData.error === 'string' ? errorData.error : JSON.stringify(errorData.error);
             errorCode = errorData.code || '';
@@ -448,7 +496,11 @@ export default function ChatInterface({
         throw error;
       }
 
-      const data = await response.json();
+      const rawPayload = await response.json();
+      const { debug, data: rawData } = extractTestDebug(rawPayload);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const data = (rawData ?? rawPayload ?? {}) as any;
+      if (debug) onRequestLogged?.(debug);
 
       // Log full response for debugging
       console.log('Full API Response:', JSON.stringify(data, null, 2));

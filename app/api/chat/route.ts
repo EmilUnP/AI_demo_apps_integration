@@ -5,6 +5,28 @@ import {
   parseJsonResponse,
   resolveAssistantShareLink,
 } from '@/lib/chatApiServer';
+import { AssistantsApiTestOptions } from '@/lib/assistantsApiTestOptions';
+import {
+  ApiTestDebugInfo,
+  headersForTestLog,
+  sanitizeBrowserProxyBody,
+} from '@/lib/assistantsApiTestLog';
+
+const previewResponse = (payload: unknown, max = 1200): string => {
+  try {
+    const text = JSON.stringify(payload, null, 2);
+    return text.length > max ? `${text.slice(0, max)}…` : text;
+  } catch {
+    return String(payload);
+  }
+};
+
+const attachTestDebug = (payload: unknown, debug: ApiTestDebugInfo): unknown => {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return { data: payload, _testDebug: debug };
+  }
+  return { ...(payload as Record<string, unknown>), _testDebug: debug };
+};
 
 export async function POST(request: NextRequest) {
   try {
@@ -23,7 +45,25 @@ export async function POST(request: NextRequest) {
       temperature,
       max_tokens,
       stream,
-    } = body;
+      apiTestOptions,
+      includeTestDebug,
+    } = body as {
+      message?: string;
+      assistant?: string;
+      external_user_id?: string;
+      external_user_name?: string;
+      external_user_email?: string;
+      visitor_id?: string;
+      apiKey?: string;
+      language?: string;
+      conversation_id?: string;
+      new_conversation?: boolean;
+      temperature?: number;
+      max_tokens?: number;
+      stream?: boolean;
+      apiTestOptions?: AssistantsApiTestOptions;
+      includeTestDebug?: boolean;
+    };
 
     if (!message || !apiKey) {
       return NextResponse.json(
@@ -41,8 +81,13 @@ export async function POST(request: NextRequest) {
       message: String(message).trim(),
     };
 
-    const lang = typeof language === 'string' && language.trim() ? language.trim() : 'az';
-    requestPayload.language = lang;
+    const includeLanguage = apiTestOptions?.includeChatLanguage !== false;
+    if (includeLanguage) {
+      const lang = typeof language === 'string' && language.trim() ? language.trim() : 'az';
+      requestPayload.language = lang;
+    } else if (typeof language === 'string' && language.trim()) {
+      requestPayload.language = language.trim();
+    }
 
     const externalUserId =
       (typeof external_user_id === 'string' && external_user_id.trim()) ||
@@ -77,6 +122,7 @@ export async function POST(request: NextRequest) {
     if (shareLink) requestPayload.assistant = shareLink;
 
     const endpoints = [chatApiUrl('/v1/chat'), chatApiUrl('/chat')];
+    const upstreamHeaders = chatAuthHeaders(apiKey);
 
     console.log('[API Proxy] POST chat', {
       endpoints: endpoints[0],
@@ -84,17 +130,20 @@ export async function POST(request: NextRequest) {
       conversationId: requestPayload.conversation_id || '(new)',
       newConversation: !!requestPayload.new_conversation,
       assistant: shareLink || '(resolved from API key)',
-      language: lang,
+      language: requestPayload.language || '(omitted)',
+      bodyFields: Object.keys(requestPayload),
     });
 
     let response: Response | null = null;
     let apiResponse: unknown = null;
+    let usedEndpoint = endpoints[0];
 
     for (const apiUrl of endpoints) {
       try {
+        usedEndpoint = apiUrl;
         response = await fetch(apiUrl, {
           method: 'POST',
-          headers: chatAuthHeaders(apiKey),
+          headers: upstreamHeaders,
           body: JSON.stringify(requestPayload),
         });
         apiResponse = await parseJsonResponse(response);
@@ -115,7 +164,31 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    return NextResponse.json(apiResponse, {
+    const responsePayload = includeTestDebug
+      ? attachTestDebug(apiResponse, {
+          at: new Date().toISOString(),
+          kind: 'chat',
+          upstream: {
+            url: usedEndpoint,
+            method: 'POST',
+            headers: headersForTestLog(upstreamHeaders),
+            body: requestPayload,
+          },
+          browserToProxy: {
+            url: '/api/chat',
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: sanitizeBrowserProxyBody(body as Record<string, unknown>),
+          },
+          response: {
+            status: response.status,
+            contentType: response.headers.get('content-type') || 'application/json',
+            preview: previewResponse(apiResponse),
+          },
+        })
+      : apiResponse;
+
+    return NextResponse.json(responsePayload, {
       status: response.status,
       headers: { 'Content-Type': 'application/json' },
     });

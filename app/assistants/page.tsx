@@ -5,7 +5,16 @@ import Link from 'next/link';
 import ChatInterface from '../components/ChatInterface';
 import ChatHistorySidebar from '../components/ChatHistorySidebar';
 import ChatUserLogin, { logoutChatUser } from '../components/ChatUserLogin';
+import AssistantsApiTestPanel from '../components/AssistantsApiTestPanel';
+import AssistantsApiRequestInspector from '../components/AssistantsApiRequestInspector';
 import { ChatUser, loadChatUser } from '@/lib/chatSession';
+import {
+  AssistantsApiTestOptions,
+  DEFAULT_ASSISTANTS_API_TEST_OPTIONS,
+  loadAssistantsApiTestOptions,
+  saveAssistantsApiTestOptions,
+} from '@/lib/assistantsApiTestOptions';
+import { ApiTestDebugInfo } from '@/lib/assistantsApiTestLog';
 
 interface Assistant {
   id: string;
@@ -70,6 +79,10 @@ export default function AssistantsPage() {
   const [selectedAssistantId, setSelectedAssistantId] = useState<string | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [historyRefresh, setHistoryRefresh] = useState(0);
+  const [apiTestOptions, setApiTestOptions] = useState<AssistantsApiTestOptions>(
+    DEFAULT_ASSISTANTS_API_TEST_OPTIONS
+  );
+  const [requestLogs, setRequestLogs] = useState<ApiTestDebugInfo[]>([]);
 
   const selectedAssistant = useMemo(
     () => assistants.find((a) => a.id === selectedAssistantId) ?? null,
@@ -79,7 +92,17 @@ export default function AssistantsPage() {
   useEffect(() => {
     const saved = loadChatUser();
     if (saved) setUser(saved);
+    setApiTestOptions(loadAssistantsApiTestOptions());
   }, []);
+
+  const handleApiTestOptionsChange = (next: AssistantsApiTestOptions) => {
+    setApiTestOptions(next);
+    saveAssistantsApiTestOptions(next);
+  };
+
+  const handleRequestLogged = (entry: ApiTestDebugInfo) => {
+    setRequestLogs((prev) => [entry, ...prev].slice(0, 12));
+  };
 
   const handleLogout = () => {
     logoutChatUser();
@@ -120,14 +143,13 @@ export default function AssistantsPage() {
           onLogout={handleLogout}
         />
 
-        {user && (
-          <p className="text-xs text-slate-500">
-            Söhbət zamanı API-yə göndərilir:{' '}
-            <code className="rounded bg-slate-900 px-1">external_user_id</code> = {user.visitorId},{' '}
-            <code className="rounded bg-slate-900 px-1">external_user_name</code> = {user.name},{' '}
-            <code className="rounded bg-slate-900 px-1">external_user_email</code> = {user.email}
-          </p>
-        )}
+        <AssistantsApiTestPanel
+          options={apiTestOptions}
+          onChange={handleApiTestOptionsChange}
+          user={user}
+        />
+
+        <AssistantsApiRequestInspector logs={requestLogs} onClear={() => setRequestLogs([])} />
 
         <div>
           <h2 className="mb-3 text-sm font-medium text-slate-400">Köməkçilər</h2>
@@ -199,7 +221,9 @@ export default function AssistantsPage() {
                   apiId={selectedAssistant.apiId}
                   user={user}
                   conversationId={conversationId}
+                  apiTestOptions={apiTestOptions}
                   onConversationIdChange={setConversationId}
+                  onRequestLogged={handleRequestLogged}
                   onSessionCompleted={() => setHistoryRefresh((k) => k + 1)}
                   onClose={() => setSelectedAssistantId(null)}
                 />
