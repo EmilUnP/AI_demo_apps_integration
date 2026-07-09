@@ -7,7 +7,13 @@ import ChatHistorySidebar from '../components/ChatHistorySidebar';
 import ChatUserLogin, { logoutChatUser } from '../components/ChatUserLogin';
 import AssistantsApiTestPanel from '../components/AssistantsApiTestPanel';
 import AssistantsApiRequestInspector from '../components/AssistantsApiRequestInspector';
+import AssistantModeToggle from '../components/AssistantModeToggle';
 import { ChatUser, loadChatUser } from '@/lib/chatSession';
+import {
+  AssistantMode,
+  loadAssistantMode,
+  saveAssistantMode,
+} from '@/lib/assistantMode';
 import {
   AssistantsApiTestOptions,
   DEFAULT_ASSISTANTS_API_TEST_OPTIONS,
@@ -23,9 +29,12 @@ interface Assistant {
   image: string;
   apiKey: string;
   apiId: string;
+  taskApiKey?: string;
+  supportsTaskMode?: boolean;
 }
 
 const defaultApiKey = process.env.NEXT_PUBLIC_API_KEY || '';
+const taskApiKey = process.env.NEXT_PUBLIC_TASK_API_KEY?.trim() || '';
 const personaAiGuideName = process.env.NEXT_PUBLIC_ASSISTANT_NAME?.trim() || 'PersonaAI Guide';
 
 const getApiKey = (index: number) => {
@@ -47,6 +56,8 @@ const assistants: Assistant[] = [
     image: '/assistants/assistant-purple.png',
     apiKey: getApiKey(0),
     apiId: '1',
+    taskApiKey: taskApiKey || undefined,
+    supportsTaskMode: !!taskApiKey,
   },
   {
     id: 'serp',
@@ -83,6 +94,7 @@ export default function AssistantsPage() {
     DEFAULT_ASSISTANTS_API_TEST_OPTIONS
   );
   const [requestLogs, setRequestLogs] = useState<ApiTestDebugInfo[]>([]);
+  const [assistantMode, setAssistantMode] = useState<AssistantMode>('chat');
 
   const selectedAssistant = useMemo(
     () => assistants.find((a) => a.id === selectedAssistantId) ?? null,
@@ -93,6 +105,7 @@ export default function AssistantsPage() {
     const saved = loadChatUser();
     if (saved) setUser(saved);
     setApiTestOptions(loadAssistantsApiTestOptions());
+    setAssistantMode(loadAssistantMode());
   }, []);
 
   const handleApiTestOptionsChange = (next: AssistantsApiTestOptions) => {
@@ -104,6 +117,15 @@ export default function AssistantsPage() {
     setRequestLogs((prev) => [entry, ...prev].slice(0, 12));
   };
 
+  const handleModeChange = (mode: AssistantMode) => {
+    setAssistantMode(mode);
+    saveAssistantMode(mode);
+    setConversationId(null);
+  };
+
+  const taskModeActive =
+    selectedAssistant?.supportsTaskMode && assistantMode === 'task';
+
   const handleLogout = () => {
     logoutChatUser();
     setUser(null);
@@ -113,6 +135,11 @@ export default function AssistantsPage() {
 
   const handleSelectAssistant = (id: string) => {
     if (!user) return;
+    const assistant = assistants.find((a) => a.id === id);
+    if (!assistant?.supportsTaskMode && assistantMode === 'task') {
+      setAssistantMode('chat');
+      saveAssistantMode('chat');
+    }
     setSelectedAssistantId(id);
     setConversationId(null);
   };
@@ -176,6 +203,11 @@ export default function AssistantsPage() {
                     className="mb-3 h-16 w-16 rounded-xl object-cover bg-slate-800"
                   />
                   <p className="text-sm font-medium text-white leading-tight">{assistant.name}</p>
+                  {assistant.supportsTaskMode && (
+                    <span className="mt-1 rounded bg-amber-950/50 px-1.5 py-0.5 text-[10px] font-medium text-amber-300">
+                      Chat + Task
+                    </span>
+                  )}
                   <p className="mt-1 text-xs text-slate-500 line-clamp-2">{assistant.description}</p>
                 </button>
               );
@@ -188,36 +220,65 @@ export default function AssistantsPage() {
 
         {selectedAssistant && user && (
           <div
-            key={selectedAssistantId}
+            key={`${selectedAssistantId}-${assistantMode}`}
             className="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/40"
           >
-            <div className="flex items-center gap-3 border-b border-slate-800 px-4 py-3">
+            <div className="flex flex-wrap items-center gap-3 border-b border-slate-800 px-4 py-3">
               <img src={selectedAssistant.image} alt="" className="h-8 w-8 rounded-lg object-cover" />
               <div className="min-w-0 flex-1">
                 <h3 className="text-sm font-medium text-white">{selectedAssistant.name}</h3>
                 <p className="text-xs text-slate-500">
-                  {conversationId ? `Söhbət · ${conversationId.slice(0, 8)}…` : 'Yeni söhbət'}
+                  {taskModeActive
+                    ? 'Task mode · tickets & slash commands'
+                    : conversationId
+                      ? `Söhbət · ${conversationId.slice(0, 8)}…`
+                      : 'Yeni söhbət'}
                 </p>
               </div>
+              {selectedAssistant.supportsTaskMode && (
+                <AssistantModeToggle
+                  mode={assistantMode}
+                  onChange={handleModeChange}
+                  taskAvailable={!!selectedAssistant.taskApiKey}
+                />
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setConversationId(null);
+                  setSelectedAssistantId(null);
+                }}
+                className="rounded-lg border border-slate-700 p-2 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                aria-label="Köməkçini bağla"
+                title="Köməkçini bağla"
+              >
+                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
             </div>
 
             <div className="flex h-[520px] min-h-0 flex-col overflow-hidden lg:flex-row">
-              <div className="h-36 shrink-0 overflow-hidden border-b border-slate-800 lg:h-auto lg:w-[220px] lg:border-b-0 lg:border-r">
-                <ChatHistorySidebar
-                  assistantId={selectedAssistant.id}
-                  apiKey={selectedAssistant.apiKey}
-                  user={user}
-                  activeConversationId={conversationId}
-                  refreshKey={historyRefresh}
-                  onSelectConversation={setConversationId}
-                  onConversationsChange={() => {}}
-                />
-              </div>
+              {!taskModeActive && (
+                <div className="h-36 shrink-0 overflow-hidden border-b border-slate-800 lg:h-auto lg:w-[220px] lg:border-b-0 lg:border-r">
+                  <ChatHistorySidebar
+                    assistantId={selectedAssistant.id}
+                    apiKey={selectedAssistant.apiKey}
+                    user={user}
+                    activeConversationId={conversationId}
+                    refreshKey={historyRefresh}
+                    onSelectConversation={setConversationId}
+                    onConversationsChange={() => {}}
+                  />
+                </div>
+              )}
               <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
                 <ChatInterface
                   assistantId={selectedAssistant.id}
                   assistantName={selectedAssistant.name}
                   apiKey={selectedAssistant.apiKey}
+                  taskApiKey={selectedAssistant.taskApiKey}
+                  assistantMode={assistantMode}
                   apiId={selectedAssistant.apiId}
                   user={user}
                   conversationId={conversationId}

@@ -13,6 +13,13 @@ import {
 } from '@/lib/chatSession';
 import { AssistantsApiTestOptions } from '@/lib/assistantsApiTestOptions';
 import { ApiTestDebugInfo, extractTestDebug } from '@/lib/assistantsApiTestLog';
+import {
+  AssistantMode,
+  resolveApiKeyForMode,
+  TASK_QUICK_COMMANDS,
+} from '@/lib/assistantMode';
+import { parseTaskCommandFromResponse, TaskCommandData } from '@/lib/taskCommand';
+import TaskCommandView from './TaskCommandView';
 
 interface Message {
   id: string;
@@ -20,6 +27,7 @@ interface Message {
   content: string;
   timestamp: Date;
   sources?: Array<{ title: string; url?: string; page?: string }>;
+  taskCommand?: TaskCommandData;
 }
 
 const CHAT_LANGUAGES = [
@@ -37,6 +45,8 @@ interface ChatInterfaceProps {
   shareLink?: string;
   assistantName: string;
   apiKey: string;
+  taskApiKey?: string;
+  assistantMode?: AssistantMode;
   apiId: string;
   defaultLanguage?: ChatLanguage;
   user: ChatUser | null;
@@ -53,6 +63,8 @@ export default function ChatInterface({
   shareLink,
   assistantName,
   apiKey,
+  taskApiKey,
+  assistantMode = 'chat',
   apiId,
   defaultLanguage = 'az',
   user,
@@ -81,6 +93,8 @@ export default function ChatInterface({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioObjectUrlRef = useRef<string | null>(null);
+  const isTaskMode = assistantMode === 'task';
+  const activeApiKey = resolveApiKeyForMode(assistantMode, apiKey, taskApiKey);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -236,6 +250,36 @@ export default function ChatInterface({
     onConversationIdChange(null);
   };
 
+  const handlePrefillTaskCommand = (message: string) => {
+    setInputMessage(message);
+    inputRef.current?.focus();
+  };
+
+  const resolveTaskDisplayContent = (
+    responseText: string,
+    taskCommand: TaskCommandData | null
+  ): string => {
+    if (!taskCommand) return responseText.trim();
+    const cmd = (taskCommand.command || '').toLowerCase();
+    if ((cmd === 'taskinfo' || cmd === 'tasks') && taskCommand.tasks?.length) return '';
+    if (cmd === 'newtask' && taskCommand.task) return '';
+    if (cmd === 'taskstatus' && taskCommand.task) return '';
+    if (cmd === 'categories' && taskCommand.categories?.length) return '';
+    if (cmd === 'taskcomment') return '';
+    return responseText.trim();
+  };
+
+  const handleCloseConversation = () => {
+    setSessionCompleted(false);
+    setShowSessionFeedback(false);
+    setFeedbackRating(null);
+    setFeedbackText('');
+    setFeedbackError('');
+    setMessages([]);
+    onConversationIdChange(null);
+    inputRef.current?.focus();
+  };
+
   // Helper function to parse sources from different formats
   const parseSources = (sourceData: any): Array<{ title: string; url?: string; page?: string }> | undefined => {
     if (!sourceData) return undefined;
@@ -278,7 +322,7 @@ export default function ChatInterface({
   };
 
   const playAssistantTts = async (message: Message) => {
-    if (!message.content.trim() || !apiKey.trim()) return;
+    if (isTaskMode || !message.content.trim() || !activeApiKey) return;
 
     if (ttsPlayingId === message.id && audioRef.current) {
       audioRef.current.pause();
@@ -305,7 +349,7 @@ export default function ChatInterface({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           text: message.content,
-          apiKey: apiKey.trim(),
+          apiKey: activeApiKey,
           ...(apiTestOptions.includeTtsLanguage ? { language } : {}),
           ...(shareLink?.trim() ? { assistant: shareLink.trim() } : {}),
           apiTestOptions,
@@ -373,35 +417,43 @@ export default function ChatInterface({
     }
   };
 
-  const sendMessage = async () => {
-    if (!inputMessage.trim() || isLoading) return;
+  const sendMessageWithText = async (text: string) => {
+    if (!text.trim() || isLoading) return;
 
     const userMessage: Message = {
       id: Date.now().toString(),
       role: 'user',
-      content: inputMessage.trim(),
+      content: text.trim(),
       timestamp: new Date()
     };
 
     setMessages(prev => {
       const next = [...prev, userMessage];
-      if (conversationId) persistMessages(conversationId, next);
+      if (conversationId && !isTaskMode) persistMessages(conversationId, next);
       return next;
     });
     setInputMessage('');
     setIsLoading(true);
 
     try {
-      if (!apiKey || apiKey.trim() === '') {
-        throw new Error('API key is not configured for this assistant. Please check your .env.local file.');
+      if (!activeApiKey) {
+        throw new Error(
+          isTaskMode
+            ? 'Task API key is not configured. Add NEXT_PUBLIC_TASK_API_KEY to .env.local.'
+            : 'API key is not configured for this assistant. Please check your .env.local file.'
+        );
       }
 
-      // Use Next.js API route to proxy the request and avoid CORS issues
+      if (isTaskMode && !user?.visitorId && !visitorId) {
+        throw new Error('Task mode requires login — external_user_id is mandatory.');
+      }
+
+      const includeExternalUserId = isTaskMode || apiTestOptions.includeExternalUserId;
+      const includeConversationMemory = !isTaskMode && apiTestOptions.includeConversationMemory;
+
       const proxyBody = {
         message: userMessage.content,
-        ...(apiTestOptions.includeExternalUserId
-          ? { external_user_id: user?.visitorId || visitorId }
-          : {}),
+        ...(includeExternalUserId ? { external_user_id: user?.visitorId || visitorId } : {}),
         ...(apiTestOptions.includeExternalUserName && user?.name?.trim()
           ? { external_user_name: user.name.trim() }
           : {}),
@@ -409,13 +461,14 @@ export default function ChatInterface({
           ? { external_user_email: user.email.trim() }
           : {}),
         ...(apiTestOptions.includeChatLanguage ? { language } : {}),
-        ...(apiTestOptions.includeConversationMemory
+        ...(includeConversationMemory
           ? conversationId
             ? { conversation_id: conversationId }
             : { new_conversation: true }
           : {}),
         ...(shareLink?.trim() ? { assistant: shareLink.trim() } : {}),
-        apiKey: apiKey.trim(),
+        apiKey: activeApiKey,
+        assistantMode,
         apiTestOptions,
         includeTestDebug: true,
       };
@@ -598,20 +651,23 @@ export default function ChatInterface({
         }
       }
 
-      // Only add message if we have actual content
-      if (responseText && responseText.trim().length > 0) {
+      const taskCommand = isTaskMode ? parseTaskCommandFromResponse(data) : null;
+      const displayContent = resolveTaskDisplayContent(responseText, taskCommand);
+
+      if (displayContent || taskCommand) {
         const assistantMessage: Message = {
           id: (Date.now() + 1).toString(),
           role: 'assistant',
-          content: responseText.trim(),
+          content: displayContent || responseText.trim(),
           timestamp: new Date(),
-          sources: sources
+          sources: sources,
+          taskCommand: taskCommand ?? undefined,
         };
 
         setMessages(prev => {
           const next = [...prev, assistantMessage];
           const activeId = (data.success === true && data.data?.conversation_id) || conversationId;
-          if (activeId) persistMessages(activeId, next);
+          if (activeId && !isTaskMode) persistMessages(activeId, next);
           return next;
         });
       } else if (!data.success) {
@@ -690,6 +746,19 @@ export default function ChatInterface({
     }
   };
 
+  const sendMessage = () => {
+    void sendMessageWithText(inputMessage);
+  };
+
+  const handleTaskQuickAction = (message: string, fillInput?: boolean) => {
+    if (fillInput) {
+      setInputMessage(message);
+      inputRef.current?.focus();
+      return;
+    }
+    void sendMessageWithText(message);
+  };
+
   const handleKeyPress = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -717,14 +786,25 @@ export default function ChatInterface({
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
                 </svg>
               </div>
-              <h3 className="text-xl font-semibold text-slate-200 mb-2">Söhbətə başlayın</h3>
-              <p className="text-slate-400">Sualınızı yazın və {assistantName} cavab versin</p>
+              <h3 className="text-xl font-semibold text-slate-200 mb-2">
+                {isTaskMode ? 'Task rejimi' : 'Söhbətə başlayın'}
+              </h3>
+              <p className="text-slate-400 max-w-sm mx-auto">
+                {isTaskMode
+                  ? 'Slash əmrləri (/help, /tasks) və ya təbii dil ilə ticket yaradın. Eyni external_user_id Chat rejimində də istifadə olunur.'
+                  : `Sualınızı yazın və ${assistantName} cavab versin`}
+              </p>
             </div>
           </div>
         ) : (
           <>
             {messages.map((message, index) => {
-              const isTableMessage = message.role === 'assistant' && messageHasTable(message.content);
+              const isTaskCommandUi =
+                message.role === 'assistant' && !!message.taskCommand;
+              const isTableMessage =
+                message.role === 'assistant' &&
+                messageHasTable(message.content) &&
+                !isTaskCommandUi;
 
               return (
               <div
@@ -736,12 +816,24 @@ export default function ChatInterface({
                   className={`rounded-2xl px-5 py-3.5 shadow-lg ${
                     message.role === 'user'
                       ? 'max-w-[80%] bg-gradient-to-br from-indigo-600 to-indigo-700 text-white'
-                      : isTableMessage
+                      : isTableMessage || isTaskCommandUi
                         ? 'w-full max-w-full bg-slate-800/90 backdrop-blur text-slate-100 border border-slate-700/50'
+                        : isTaskMode && message.role === 'assistant'
+                          ? 'max-w-[92%] bg-slate-800/90 backdrop-blur text-slate-100 border border-amber-900/30'
                         : 'max-w-[85%] bg-slate-800/90 backdrop-blur text-slate-100 border border-slate-700/50'
-                  } transition-all duration-200 hover:shadow-xl`}
+                  } transition-all duration-200 hover:shadow-xl ${
+                    isTaskCommandUi ? 'border-amber-900/30' : ''
+                  }`}
                 >
-                  <ChatMessageContent content={message.content} variant={message.role} />
+                  {isTaskCommandUi && message.taskCommand ? (
+                    <TaskCommandView
+                      command={message.taskCommand}
+                      fallbackText={message.content || undefined}
+                      onPrefillMessage={handlePrefillTaskCommand}
+                    />
+                  ) : (
+                    <ChatMessageContent content={message.content} variant={message.role} />
+                  )}
                   
                   {/* Display sources if available */}
                   {message.sources && message.sources.length > 0 && (
@@ -780,7 +872,7 @@ export default function ChatInterface({
                     }`}>
                       {message.timestamp.toLocaleTimeString('az-AZ', { hour: '2-digit', minute: '2-digit' })}
                     </span>
-                    {message.role === 'assistant' && message.content.trim() && (
+                    {message.role === 'assistant' && message.content.trim() && !isTaskMode && (
                       <button
                         type="button"
                         onClick={() => void playAssistantTts(message)}
@@ -849,7 +941,7 @@ export default function ChatInterface({
           </div>
         )}
 
-        {showSessionFeedback && conversationId && !sessionCompleted && (
+        {showSessionFeedback && conversationId && !sessionCompleted && !isTaskMode && (
           <div className="mb-3 rounded-xl border border-slate-700 bg-slate-900/80 px-4 py-4 space-y-3">
             <p className="text-sm font-medium text-slate-200">Söhbəti qiymətləndirin</p>
             <p className="text-xs text-slate-500">Bu, sessiyanı bitirir və köməkçiyə ümumi rəy verir.</p>
@@ -915,7 +1007,18 @@ export default function ChatInterface({
             Cavab dili
           </label>
           <div className="flex items-center gap-2">
-            {conversationId && messages.length > 0 && !sessionCompleted && !showSessionFeedback && (
+            {!isTaskMode && (conversationId || messages.length > 0) && !sessionCompleted && (
+              <button
+                type="button"
+                onClick={handleCloseConversation}
+                disabled={isLoading}
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-400 hover:bg-slate-800 hover:text-slate-200 disabled:opacity-50"
+                title="Cari söhbəti bağla və yenisini başlat"
+              >
+                Bağla
+              </button>
+            )}
+            {conversationId && messages.length > 0 && !sessionCompleted && !showSessionFeedback && !isTaskMode && (
               <button
                 type="button"
                 onClick={() => setShowSessionFeedback(true)}
@@ -939,7 +1042,28 @@ export default function ChatInterface({
             </select>
           </div>
         </div>
-        {ttsError && (
+        {isTaskMode && (
+          <div className="mb-3">
+            <p className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-slate-500">
+              Slash commands
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {TASK_QUICK_COMMANDS.map((cmd) => (
+                <button
+                  key={cmd.label}
+                  type="button"
+                  title={cmd.hint}
+                  disabled={isLoading}
+                  onClick={() => handleTaskQuickAction(cmd.message, cmd.fillInput)}
+                  className="rounded-lg border border-amber-800/50 bg-amber-950/30 px-2.5 py-1 text-xs text-amber-200 hover:bg-amber-900/40 disabled:opacity-50"
+                >
+                  {cmd.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {ttsError && !isTaskMode && (
           <p className="mb-2 text-xs text-red-400">{ttsError}</p>
         )}
         <div className="flex gap-3 items-end min-w-0">
@@ -949,7 +1073,11 @@ export default function ChatInterface({
               value={inputMessage}
               onChange={(e) => setInputMessage(e.target.value)}
               onKeyPress={handleKeyPress}
-              placeholder="Mesajınızı yazın..."
+              placeholder={
+                isTaskMode
+                  ? '/help, /newtask billing …, və ya təbii dil ilə ticket'
+                  : 'Mesajınızı yazın...'
+              }
               className="w-full bg-slate-800/90 backdrop-blur border border-slate-700/50 rounded-xl px-5 py-4 pr-14 text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 resize-none transition-all duration-200"
               rows={1}
               style={{ minHeight: '52px', maxHeight: '120px' }}

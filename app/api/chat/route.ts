@@ -47,6 +47,7 @@ export async function POST(request: NextRequest) {
       stream,
       apiTestOptions,
       includeTestDebug,
+      assistantMode,
     } = body as {
       message?: string;
       assistant?: string;
@@ -63,6 +64,7 @@ export async function POST(request: NextRequest) {
       stream?: boolean;
       apiTestOptions?: AssistantsApiTestOptions;
       includeTestDebug?: boolean;
+      assistantMode?: 'chat' | 'task';
     };
 
     if (!message || !apiKey) {
@@ -168,6 +170,8 @@ export async function POST(request: NextRequest) {
       ? attachTestDebug(apiResponse, {
           at: new Date().toISOString(),
           kind: 'chat',
+          mode: assistantMode === 'task' ? 'task' : 'chat',
+          keyType: assistantMode === 'task' ? 'task' : 'chat',
           upstream: {
             url: usedEndpoint,
             method: 'POST',

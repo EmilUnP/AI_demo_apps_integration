@@ -46,6 +46,11 @@ export default function AssistantsApiRequestInspector({ logs, onClear }: Assista
               <span className="rounded bg-indigo-950 px-2 py-0.5 font-medium text-indigo-300 uppercase">
                 {log.kind}
               </span>
+              {log.mode && (
+                <span className="rounded bg-slate-800 px-2 py-0.5 text-slate-300 uppercase">
+                  {log.mode} key
+                </span>
+              )}
               <span className="text-slate-500">{new Date(log.at).toLocaleString('az-AZ')}</span>
               <span
                 className={`rounded px-2 py-0.5 ${

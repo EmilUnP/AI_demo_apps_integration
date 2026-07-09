@@ -1,6 +1,8 @@
 export interface ApiTestDebugInfo {
   at: string;
   kind: 'chat' | 'tts';
+  mode?: 'chat' | 'task';
+  keyType?: 'chat' | 'task';
   upstream: {
     url: string;
     method: string;

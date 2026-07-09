@@ -366,6 +366,25 @@ iframe {
   margin-bottom: 0;
 }
 
+.chat-markdown h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+  font-weight: 600;
+  color: rgb(241, 245, 249);
+}
+
+.chat-markdown em {
+  display: block;
+  margin-top: 0.75rem;
+  font-size: 0.8125rem;
+  color: rgb(148, 163, 184);
+  font-style: normal;
+}
+
+.chat-markdown code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
 .chat-markdown p {
   margin: 0 0 0.75rem;
 }
