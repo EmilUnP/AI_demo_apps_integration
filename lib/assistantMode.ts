@@ -44,9 +44,3 @@ export const saveAssistantMode = (mode: AssistantMode): void => {
   if (typeof window === 'undefined') return;
   sessionStorage.setItem(ASSISTANT_MODE_KEY, mode);
 };
-
-export const resolveApiKeyForMode = (
-  mode: AssistantMode,
-  chatApiKey: string,
-  taskApiKey?: string
-): string => (mode === 'task' && taskApiKey?.trim() ? taskApiKey.trim() : chatApiKey.trim());

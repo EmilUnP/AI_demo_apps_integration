@@ -1,75 +1,59 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { chatApiUrl, chatAuthHeaders, parseJsonResponse } from '@/lib/chatApiServer';
-
-const normalizeConversations = (data: unknown): Record<string, string>[] => {
-  if (Array.isArray(data)) return data as Record<string, string>[];
-  if (data && typeof data === 'object') {
-    const obj = data as Record<string, unknown>;
-    if (Array.isArray(obj.conversations)) return obj.conversations as Record<string, string>[];
-    if (Array.isArray(obj.items)) return obj.items as Record<string, string>[];
-  }
-  return [];
-};
+import {
+  missingAssistantKeyResponse,
+  normalizeConversations,
+  resolveAssistantApiKey,
+  safeErrorMessage,
+  upstreamJson,
+  validationErrorResponse,
+} from '@/lib/chatApiServer';
+import { conversationsQuerySchema } from '@/lib/chatTypes';
 
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = request.nextUrl;
-    const apiKey = searchParams.get('apiKey');
-    const externalUserId =
-      searchParams.get('external_user_id') || searchParams.get('visitor_id');
+    const parsed = conversationsQuerySchema.safeParse({
+      assistantId: searchParams.get('assistantId'),
+      external_user_id:
+        searchParams.get('external_user_id') || searchParams.get('visitor_id'),
+      limit: searchParams.get('limit') || undefined,
+      offset: searchParams.get('offset') || undefined,
+    });
 
-    if (!apiKey || !externalUserId) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: 'apiKey and external_user_id are required',
-          code: 'MISSING_PARAMS',
-        },
-        { status: 400 }
-      );
+    if (!parsed.success) {
+      return NextResponse.json(validationErrorResponse(parsed.error), { status: 400 });
+    }
+
+    const { assistantId, external_user_id, limit, offset } = parsed.data;
+    const apiKey = resolveAssistantApiKey(assistantId, 'chat');
+    if (!apiKey) {
+      return NextResponse.json(missingAssistantKeyResponse(assistantId, 'chat'), { status: 503 });
     }
 
     const v1Query = new URLSearchParams({
       action: 'conversations',
-      external_user_id: externalUserId,
-      limit: searchParams.get('limit') || '20',
+      external_user_id,
+      limit: String(limit),
     });
-    if (searchParams.get('offset')) v1Query.set('offset', searchParams.get('offset')!);
+    if (typeof offset === 'number') v1Query.set('offset', String(offset));
 
-    const legacyQuery = new URLSearchParams({ visitor_id: externalUserId });
-    const assistant = searchParams.get('assistant');
-    if (assistant) legacyQuery.set('assistant', assistant);
+    const { response, data } = await upstreamJson(`/v1/data?${v1Query}`, apiKey);
 
-    const endpoints = [
-      chatApiUrl(`/v1/data?${v1Query}`),
-      chatApiUrl(`/v1/chat/conversations?${legacyQuery}`),
-      chatApiUrl(`/chat/conversations?${legacyQuery}`),
-    ];
-
-    for (const url of endpoints) {
-      const response = await fetch(url, { headers: chatAuthHeaders(apiKey) });
-      if (response.status === 404) continue;
-
-      const parsed = (await parseJsonResponse(response)) as {
-        success?: boolean;
-        data?: unknown;
-        error?: string;
-      };
-
-      if (parsed.success === false) {
-        return NextResponse.json(parsed, { status: response.status });
-      }
-
-      const list = normalizeConversations(parsed.data);
-      return NextResponse.json(
-        { success: true, data: list },
-        { status: response.status }
-      );
+    const payload = data as { success?: boolean; data?: unknown; error?: string };
+    if (payload.success === false) {
+      return NextResponse.json(payload, { status: response.status });
     }
 
-    return NextResponse.json({ success: true, data: [] });
+    const list = normalizeConversations(payload.data ?? payload);
+    return NextResponse.json({ success: true, data: list }, { status: response.status });
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : 'Failed to load conversations';
-    return NextResponse.json({ success: false, error: message, code: 'PROXY_ERROR' }, { status: 500 });
+    return NextResponse.json(
+      {
+        success: false,
+        error: safeErrorMessage(error, 'Failed to load conversations'),
+        code: 'PROXY_ERROR',
+      },
+      { status: 500 }
+    );
   }
 }

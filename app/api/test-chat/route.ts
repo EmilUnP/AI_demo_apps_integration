@@ -1,85 +1,105 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { chatApiUrl, chatAuthHeaders, parseJsonResponse, resolveAssistantShareLink } from '@/lib/chatApiServer';
+import {
+  isDevDiagnosticsEnabled,
+  missingAssistantKeyResponse,
+  resolveAssistantApiKey,
+  resolveAssistantShareLink,
+  safeErrorMessage,
+  upstreamJson,
+  validationErrorResponse,
+} from '@/lib/chatApiServer';
+import { assistantIdSchema } from '@/lib/chatTypes';
+import { z } from 'zod';
 
-/** Test endpoint — POST /api/v1/chat via proxy */
+const testChatSchema = z.object({
+  message: z.string().trim().min(1).max(8000).optional().default('Hello, this is a test message'),
+  assistantId: assistantIdSchema.optional().default('personaai-guide'),
+  assistant: z.string().trim().min(1).max(200).optional(),
+  language: z.enum(['auto', 'az', 'en', 'ru']).optional().default('auto'),
+  external_user_id: z.string().trim().min(1).max(200).optional(),
+  external_user_name: z.string().trim().min(1).max(200).optional(),
+  external_user_email: z.string().trim().email().max(320).optional(),
+});
+
+/** Dev-only test endpoint — never accepts client API keys. */
 export async function POST(request: NextRequest) {
+  if (!isDevDiagnosticsEnabled()) {
+    return NextResponse.json(
+      { success: false, error: 'Diagnostics disabled', code: 'DIAGNOSTICS_DISABLED' },
+      { status: 403 }
+    );
+  }
+
   try {
     const body = await request.json();
+    const parsed = testChatSchema.safeParse(body);
+    if (!parsed.success) {
+      return NextResponse.json(validationErrorResponse(parsed.error), { status: 400 });
+    }
+
     const {
-      message = 'Hello, this is a test message',
+      message,
+      assistantId,
       assistant,
-      apiKey,
-      language = 'az',
+      language,
       external_user_id,
       external_user_name,
       external_user_email,
-    } = body;
+    } = parsed.data;
 
+    const apiKey = resolveAssistantApiKey(assistantId, 'chat');
     if (!apiKey) {
-      return NextResponse.json({
-        success: false,
-        error: 'Missing required field: apiKey is required',
-        code: 'MISSING_FIELDS',
-      }, { status: 400 });
+      return NextResponse.json(missingAssistantKeyResponse(assistantId, 'chat'), { status: 503 });
     }
 
     const requestPayload: Record<string, unknown> = {
-      message: String(message).trim(),
-      language: String(language).trim(),
+      message,
+      language,
       external_user_id: external_user_id || `test-user-${Date.now()}`,
       new_conversation: true,
+      stream: false,
     };
 
-    if (typeof external_user_name === 'string' && external_user_name.trim()) {
-      requestPayload.external_user_name = external_user_name.trim();
-    }
-    if (typeof external_user_email === 'string' && external_user_email.trim()) {
-      requestPayload.external_user_email = external_user_email.trim();
-    }
+    if (external_user_name) requestPayload.external_user_name = external_user_name;
+    if (external_user_email) requestPayload.external_user_email = external_user_email;
 
     const shareLink = resolveAssistantShareLink(assistant);
     if (shareLink) requestPayload.assistant = shareLink;
 
-    const apiUrl = chatApiUrl('/v1/chat');
-
-    console.log('[Test] POST', apiUrl, { assistant: shareLink || '(API key)' });
-
-    const response = await fetch(apiUrl, {
+    const { response, data } = await upstreamJson('/v1/chat', apiKey, {
       method: 'POST',
-      headers: chatAuthHeaders(apiKey),
       body: JSON.stringify(requestPayload),
     });
 
-    const parsedResponse = await parseJsonResponse(response);
-
-    return NextResponse.json({
-      success: response.ok,
-      testResults: {
-        endpoint: apiUrl,
-        requestPayload,
-        response: {
-          status: response.status,
-          statusText: response.statusText,
-          body: parsedResponse,
-        },
-        apiKey: {
-          format: apiKey.startsWith('sk_') ? 'VALID' : 'INVALID',
-          length: apiKey.length,
-          preview: `${apiKey.substring(0, 12)}...`,
+    return NextResponse.json(
+      {
+        success: response.ok,
+        testResults: {
+          endpoint: '/v1/chat',
+          assistantId,
+          requestPayload: {
+            ...requestPayload,
+            // never echo secrets
+          },
+          response: {
+            status: response.status,
+            statusText: response.statusText,
+            body: data,
+          },
+          apiKeyConfigured: true,
         },
       },
-      diagnostics: {
-        apiError: !response.ok,
-        errorDetails: response.ok ? null : parsedResponse,
-      },
-    }, { status: 200 });
+      { status: 200 }
+    );
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : 'Test failed';
     console.error('[Test] Error:', error);
-    return NextResponse.json({
-      success: false,
-      error: message,
-      code: 'TEST_ERROR',
-    }, { status: 500 });
+    return NextResponse.json(
+      {
+        success: false,
+        error: safeErrorMessage(error, 'Test failed'),
+        code: 'TEST_ERROR',
+      },
+      { status: 500 }
+    );
   }
 }

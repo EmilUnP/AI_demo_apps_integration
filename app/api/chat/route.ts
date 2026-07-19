@@ -2,10 +2,16 @@ import { NextRequest, NextResponse } from 'next/server';
 import {
   chatApiUrl,
   chatAuthHeaders,
+  fetchWithTimeout,
+  isDevDiagnosticsEnabled,
+  missingAssistantKeyResponse,
   parseJsonResponse,
+  resolveAssistantApiKey,
   resolveAssistantShareLink,
+  safeErrorMessage,
+  validationErrorResponse,
 } from '@/lib/chatApiServer';
-import { AssistantsApiTestOptions } from '@/lib/assistantsApiTestOptions';
+import { chatProxyRequestSchema } from '@/lib/chatTypes';
 import {
   ApiTestDebugInfo,
   headersForTestLog,
@@ -31,149 +37,143 @@ const attachTestDebug = (payload: unknown, debug: ApiTestDebugInfo): unknown => 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
+    const parsed = chatProxyRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      return NextResponse.json(validationErrorResponse(parsed.error), { status: 400 });
+    }
+
     const {
       message,
-      assistant,
+      assistantId,
+      assistantMode,
+      language,
       external_user_id,
       external_user_name,
       external_user_email,
-      visitor_id,
-      apiKey,
-      language,
       conversation_id,
       new_conversation,
       temperature,
       max_tokens,
       stream,
+      option_id,
+      clarification_option_id,
+      assistant,
       apiTestOptions,
       includeTestDebug,
-      assistantMode,
-    } = body as {
-      message?: string;
-      assistant?: string;
-      external_user_id?: string;
-      external_user_name?: string;
-      external_user_email?: string;
-      visitor_id?: string;
-      apiKey?: string;
-      language?: string;
-      conversation_id?: string;
-      new_conversation?: boolean;
-      temperature?: number;
-      max_tokens?: number;
-      stream?: boolean;
-      apiTestOptions?: AssistantsApiTestOptions;
-      includeTestDebug?: boolean;
-      assistantMode?: 'chat' | 'task';
-    };
+    } = parsed.data;
 
-    if (!message || !apiKey) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: 'Missing required fields',
-          code: 'MISSING_PARAMS',
-          details: 'message and apiKey are required',
-        },
-        { status: 400 }
-      );
+    const mode = assistantMode === 'task' ? 'task' : 'chat';
+    const apiKey = resolveAssistantApiKey(assistantId, mode);
+    if (!apiKey) {
+      return NextResponse.json(missingAssistantKeyResponse(assistantId, mode), { status: 503 });
     }
 
+    // Test debug needs a single JSON body — force non-stream
+    const useStream = stream === true && !(includeTestDebug && isDevDiagnosticsEnabled());
+
     const requestPayload: Record<string, unknown> = {
-      message: String(message).trim(),
+      message,
+      stream: useStream,
     };
 
     const includeLanguage = apiTestOptions?.includeChatLanguage !== false;
     if (includeLanguage) {
-      const lang = typeof language === 'string' && language.trim() ? language.trim() : 'az';
-      requestPayload.language = lang;
-    } else if (typeof language === 'string' && language.trim()) {
-      requestPayload.language = language.trim();
+      requestPayload.language = language || 'auto';
+    } else if (language) {
+      requestPayload.language = language;
     }
 
-    const externalUserId =
-      (typeof external_user_id === 'string' && external_user_id.trim()) ||
-      (typeof visitor_id === 'string' && visitor_id.trim()) ||
-      undefined;
-    if (externalUserId) requestPayload.external_user_id = externalUserId;
+    const includeExternalUserId =
+      mode === 'task' || apiTestOptions?.includeExternalUserId !== false;
+    if (includeExternalUserId && external_user_id) {
+      requestPayload.external_user_id = external_user_id;
+    }
+    if (apiTestOptions?.includeExternalUserName !== false && external_user_name) {
+      requestPayload.external_user_name = external_user_name;
+    }
+    if (apiTestOptions?.includeExternalUserEmail !== false && external_user_email) {
+      requestPayload.external_user_email = external_user_email;
+    }
 
-    if (typeof external_user_name === 'string' && external_user_name.trim()) {
-      requestPayload.external_user_name = external_user_name.trim();
-    }
-    if (typeof external_user_email === 'string' && external_user_email.trim()) {
-      requestPayload.external_user_email = external_user_email.trim();
+    const includeConversationMemory =
+      mode !== 'task' && apiTestOptions?.includeConversationMemory !== false;
+    if (includeConversationMemory) {
+      if (conversation_id) requestPayload.conversation_id = conversation_id;
+      if (new_conversation === true) requestPayload.new_conversation = true;
     }
 
-    if (typeof conversation_id === 'string' && conversation_id.trim()) {
-      requestPayload.conversation_id = conversation_id.trim();
-    }
-    if (new_conversation === true) {
-      requestPayload.new_conversation = true;
-    }
-    if (typeof temperature === 'number' && Number.isFinite(temperature)) {
-      requestPayload.temperature = temperature;
-    }
-    if (typeof max_tokens === 'number' && Number.isFinite(max_tokens)) {
-      requestPayload.max_tokens = max_tokens;
-    }
-    if (stream === true) {
-      requestPayload.stream = true;
+    if (typeof temperature === 'number') requestPayload.temperature = temperature;
+    if (typeof max_tokens === 'number') requestPayload.max_tokens = max_tokens;
+
+    const resolvedOptionId = option_id || clarification_option_id;
+    if (resolvedOptionId) {
+      requestPayload.option_id = resolvedOptionId;
     }
 
     const shareLink = resolveAssistantShareLink(assistant);
     if (shareLink) requestPayload.assistant = shareLink;
 
-    const endpoints = [chatApiUrl('/v1/chat'), chatApiUrl('/chat')];
-    const upstreamHeaders = chatAuthHeaders(apiKey);
+    const apiUrl = chatApiUrl('/v1/chat');
+    const upstreamHeaders = {
+      ...chatAuthHeaders(apiKey),
+      ...(useStream ? { Accept: 'text/event-stream, application/json' } : {}),
+    };
 
-    console.log('[API Proxy] POST chat', {
-      endpoints: endpoints[0],
-      hasExternalUserId: !!externalUserId,
+    console.log('[API Proxy] POST /v1/chat', {
+      assistantId,
+      mode,
+      stream: useStream,
+      hasExternalUserId: !!requestPayload.external_user_id,
       conversationId: requestPayload.conversation_id || '(new)',
       newConversation: !!requestPayload.new_conversation,
-      assistant: shareLink || '(resolved from API key)',
+      optionId: requestPayload.option_id || '(none)',
       language: requestPayload.language || '(omitted)',
       bodyFields: Object.keys(requestPayload),
     });
 
-    let response: Response | null = null;
-    let apiResponse: unknown = null;
-    let usedEndpoint = endpoints[0];
-
-    for (const apiUrl of endpoints) {
-      try {
-        usedEndpoint = apiUrl;
-        response = await fetch(apiUrl, {
-          method: 'POST',
-          headers: upstreamHeaders,
-          body: JSON.stringify(requestPayload),
-        });
-        apiResponse = await parseJsonResponse(response);
-        if (response.status !== 404) break;
-      } catch (error: unknown) {
-        const details = error instanceof Error ? error.message : 'Network error';
-        return NextResponse.json(
-          { success: false, error: 'Failed to connect to chat API', details, code: 'NETWORK_ERROR' },
-          { status: 503 }
-        );
-      }
-    }
-
-    if (!response || !apiResponse) {
+    let response: Response;
+    try {
+      response = await fetchWithTimeout(apiUrl, {
+        method: 'POST',
+        headers: upstreamHeaders,
+        body: JSON.stringify(requestPayload),
+      });
+    } catch (error: unknown) {
       return NextResponse.json(
-        { success: false, error: 'No response from chat API', code: 'NO_RESPONSE' },
+        {
+          success: false,
+          error: safeErrorMessage(error, 'Failed to connect to chat API'),
+          code: 'NETWORK_ERROR',
+        },
         { status: 503 }
       );
     }
 
-    const responsePayload = includeTestDebug
+    const contentType = response.headers.get('content-type') || '';
+
+    // Forward SSE stream unchanged
+    if (useStream && contentType.includes('text/event-stream') && response.body) {
+      return new NextResponse(response.body, {
+        status: response.status,
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache, no-transform',
+          Connection: 'keep-alive',
+        },
+      });
+    }
+
+    const apiResponse = await parseJsonResponse(response);
+    const allowDebug = includeTestDebug === true && isDevDiagnosticsEnabled();
+
+    const responsePayload = allowDebug
       ? attachTestDebug(apiResponse, {
           at: new Date().toISOString(),
           kind: 'chat',
-          mode: assistantMode === 'task' ? 'task' : 'chat',
-          keyType: assistantMode === 'task' ? 'task' : 'chat',
+          mode,
+          keyType: mode,
           upstream: {
-            url: usedEndpoint,
+            url: apiUrl,
             method: 'POST',
             headers: headersForTestLog(upstreamHeaders),
             body: requestPayload,
@@ -186,7 +186,7 @@ export async function POST(request: NextRequest) {
           },
           response: {
             status: response.status,
-            contentType: response.headers.get('content-type') || 'application/json',
+            contentType: contentType || 'application/json',
             preview: previewResponse(apiResponse),
           },
         })
@@ -197,10 +197,13 @@ export async function POST(request: NextRequest) {
       headers: { 'Content-Type': 'application/json' },
     });
   } catch (error: unknown) {
-    const details = error instanceof Error ? error.message : 'Unknown error';
     console.error('[API Proxy] Unexpected error:', error);
     return NextResponse.json(
-      { success: false, error: 'Internal server error', details, code: 'PROXY_ERROR' },
+      {
+        success: false,
+        error: safeErrorMessage(error, 'Internal server error'),
+        code: 'PROXY_ERROR',
+      },
       { status: 500 }
     );
   }

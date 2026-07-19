@@ -1,6 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { chatApiUrl, parseJsonResponse, resolveAssistantShareLink } from '@/lib/chatApiServer';
-import { AssistantsApiTestOptions } from '@/lib/assistantsApiTestOptions';
+import {
+  chatApiUrl,
+  fetchWithTimeout,
+  isDevDiagnosticsEnabled,
+  missingAssistantKeyResponse,
+  parseJsonResponse,
+  resolveAssistantApiKey,
+  resolveAssistantShareLink,
+  safeErrorMessage,
+  validationErrorResponse,
+} from '@/lib/chatApiServer';
+import { ttsProxyRequestSchema } from '@/lib/chatTypes';
 import {
   ApiTestDebugInfo,
   headersForTestLog,
@@ -16,82 +26,71 @@ const previewResponse = (payload: unknown, max = 800): string => {
   }
 };
 
-/** Proxy POST /api/v1/tts — returns raw audio/mpeg on success. */
+/** Proxy POST /api/v1/tts — returns raw audio/wav on success. */
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { text, apiKey, language, assistant, apiTestOptions, includeTestDebug } = body as {
-      text?: string;
-      apiKey?: string;
-      language?: string;
-      assistant?: string;
-      apiTestOptions?: AssistantsApiTestOptions;
-      includeTestDebug?: boolean;
-    };
-
-    if (!text || typeof text !== 'string' || !text.trim()) {
-      return NextResponse.json(
-        { success: false, error: 'text is required', code: 'MISSING_PARAMS' },
-        { status: 400 }
-      );
+    const parsed = ttsProxyRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      return NextResponse.json(validationErrorResponse(parsed.error), { status: 400 });
     }
 
-    if (!apiKey || typeof apiKey !== 'string' || !apiKey.trim()) {
-      return NextResponse.json(
-        { success: false, error: 'apiKey is required', code: 'MISSING_PARAMS' },
-        { status: 400 }
-      );
+    const {
+      text,
+      assistantId,
+      language,
+      gender,
+      assistant,
+      apiTestOptions,
+      includeTestDebug,
+    } = parsed.data;
+
+    const apiKey = resolveAssistantApiKey(assistantId, 'chat');
+    if (!apiKey) {
+      return NextResponse.json(missingAssistantKeyResponse(assistantId, 'chat'), { status: 503 });
     }
 
-    const requestPayload: Record<string, unknown> = {
-      text: text.trim(),
-    };
+    const requestPayload: Record<string, unknown> = { text };
 
-    if (apiTestOptions?.includeTtsGender !== false) {
-      requestPayload.gender = 'female';
+    if (apiTestOptions?.includeTtsLanguage !== false) {
+      requestPayload.language = language || 'auto';
+    } else if (language) {
+      requestPayload.language = language;
     }
 
-    if (typeof language === 'string' && language.trim()) {
-      requestPayload.language = language.trim();
+    if (apiTestOptions?.includeTtsGender !== false && gender) {
+      requestPayload.gender = gender;
     }
 
     const shareLink = resolveAssistantShareLink(assistant);
     if (shareLink) requestPayload.assistant = shareLink;
 
-    const endpoints = [chatApiUrl('/v1/tts'), chatApiUrl('/tts')];
+    const apiUrl = chatApiUrl('/v1/tts');
     const upstreamHeaders = {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey.trim()}`,
-      Accept: 'audio/mpeg, application/json',
+      Authorization: `Bearer ${apiKey}`,
+      Accept: 'audio/wav, audio/mpeg, application/json',
     };
 
-    let response: Response | null = null;
-    let usedEndpoint = endpoints[0];
-
-    for (const apiUrl of endpoints) {
-      try {
-        usedEndpoint = apiUrl;
-        response = await fetch(apiUrl, {
-          method: 'POST',
-          headers: upstreamHeaders,
-          body: JSON.stringify(requestPayload),
-        });
-        if (response.status !== 404) break;
-      } catch (error: unknown) {
-        const details = error instanceof Error ? error.message : 'Network error';
-        return NextResponse.json(
-          { success: false, error: 'Failed to connect to TTS API', details, code: 'NETWORK_ERROR' },
-          { status: 503 }
-        );
-      }
-    }
-
-    if (!response) {
+    let response: Response;
+    try {
+      response = await fetchWithTimeout(apiUrl, {
+        method: 'POST',
+        headers: upstreamHeaders,
+        body: JSON.stringify(requestPayload),
+      });
+    } catch (error: unknown) {
       return NextResponse.json(
-        { success: false, error: 'No response from TTS API', code: 'NO_RESPONSE' },
+        {
+          success: false,
+          error: safeErrorMessage(error, 'Failed to connect to TTS API'),
+          code: 'NETWORK_ERROR',
+        },
         { status: 503 }
       );
     }
+
+    const allowDebug = includeTestDebug === true && isDevDiagnosticsEnabled();
 
     if (!response.ok) {
       const errorBody = await parseJsonResponse(response);
@@ -100,12 +99,12 @@ export async function POST(request: NextRequest) {
           ? errorBody
           : { success: false, error: 'TTS failed', code: 'TTS_ERROR' };
 
-      if (includeTestDebug) {
+      if (allowDebug) {
         const debug: ApiTestDebugInfo = {
           at: new Date().toISOString(),
           kind: 'tts',
           upstream: {
-            url: usedEndpoint,
+            url: apiUrl,
             method: 'POST',
             headers: headersForTestLog(upstreamHeaders),
             body: requestPayload,
@@ -122,23 +121,26 @@ export async function POST(request: NextRequest) {
             preview: previewResponse(errorPayload),
           },
         };
-        return NextResponse.json({ ...(errorPayload as Record<string, unknown>), _testDebug: debug }, {
-          status: response.status,
-        });
+        return NextResponse.json(
+          { ...(errorPayload as Record<string, unknown>), _testDebug: debug },
+          { status: response.status }
+        );
       }
 
       return NextResponse.json(errorPayload, { status: response.status });
     }
 
     const audioBuffer = await response.arrayBuffer();
-    const contentType = response.headers.get('Content-Type') || 'audio/mpeg';
+    const contentType = response.headers.get('Content-Type') || 'audio/wav';
+    const isWav = contentType.includes('wav');
+    const filename = isWav ? 'assistant-reply.wav' : 'assistant-reply.mp3';
 
-    if (includeTestDebug) {
+    if (allowDebug) {
       const debug: ApiTestDebugInfo = {
         at: new Date().toISOString(),
         kind: 'tts',
         upstream: {
-          url: usedEndpoint,
+          url: apiUrl,
           method: 'POST',
           headers: headersForTestLog(upstreamHeaders),
           body: requestPayload,
@@ -152,7 +154,7 @@ export async function POST(request: NextRequest) {
         response: {
           status: response.status,
           contentType,
-          preview: `<binary MP3 · ${audioBuffer.byteLength} bytes>`,
+          preview: `<binary audio · ${audioBuffer.byteLength} bytes>`,
         },
       };
 
@@ -169,15 +171,18 @@ export async function POST(request: NextRequest) {
       headers: {
         'Content-Type': contentType,
         'Content-Disposition':
-          response.headers.get('Content-Disposition') || 'inline; filename="assistant-reply.mp3"',
+          response.headers.get('Content-Disposition') || `inline; filename="${filename}"`,
         'Cache-Control': 'no-store',
       },
     });
   } catch (error: unknown) {
-    const details = error instanceof Error ? error.message : 'Unknown error';
     console.error('[TTS Proxy] Unexpected error:', error);
     return NextResponse.json(
-      { success: false, error: 'Internal server error', details, code: 'PROXY_ERROR' },
+      {
+        success: false,
+        error: safeErrorMessage(error, 'Internal server error'),
+        code: 'PROXY_ERROR',
+      },
       { status: 500 }
     );
   }

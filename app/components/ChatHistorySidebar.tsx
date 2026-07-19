@@ -2,14 +2,15 @@
 
 import { useEffect, useState } from 'react';
 import { ChatUser, ConversationSummary, loadConversationSummaries } from '@/lib/chatSession';
+import { AssistantId } from '@/lib/chatTypes';
 
 interface ChatHistorySidebarProps {
-  assistantId: string;
-  apiKey: string;
+  assistantId: AssistantId;
   user: ChatUser;
   activeConversationId: string | null;
   refreshKey?: number;
   onSelectConversation: (conversationId: string | null) => void;
+  onNewConversation: () => void;
   onConversationsChange: (conversations: ConversationSummary[]) => void;
 }
 
@@ -21,11 +22,11 @@ const statusLabel = (status?: string) => {
 
 export default function ChatHistorySidebar({
   assistantId,
-  apiKey,
   user,
   activeConversationId,
   refreshKey = 0,
   onSelectConversation,
+  onNewConversation,
   onConversationsChange,
 }: ChatHistorySidebarProps) {
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
@@ -35,23 +36,23 @@ export default function ChatHistorySidebar({
     setConversations(local);
     onConversationsChange(local);
 
-    if (!apiKey) return;
-
     try {
       const params = new URLSearchParams({
-        apiKey,
+        assistantId,
         external_user_id: user.visitorId,
       });
       const res = await fetch(`/api/chat/conversations?${params}`);
       const data = await res.json();
       if (data.success && Array.isArray(data.data) && data.data.length > 0) {
-        const remote: ConversationSummary[] = data.data.map((item: Record<string, string>) => ({
-          id: item.id || item.conversation_id,
-          title: item.title || item.preview || item.last_message || 'Söhbət',
-          preview: item.preview || item.last_message,
-          updatedAt: item.updated_at || item.updatedAt || new Date().toISOString(),
+        const remote: ConversationSummary[] = data.data.map((item: Record<string, unknown>) => ({
+          id: String(item.id || item.conversation_id || ''),
+          title: String(item.title || item.preview || 'Söhbət'),
+          preview: typeof item.preview === 'string' ? item.preview : undefined,
+          updatedAt: String(item.updatedAt || item.updated_at || new Date().toISOString()),
           assistantId,
-          status: item.status || 'active',
+          status: typeof item.status === 'string' ? item.status : 'active',
+          satisfaction_rating:
+            typeof item.satisfaction_rating === 'number' ? item.satisfaction_rating : null,
         }));
         setConversations(remote);
         onConversationsChange(remote);
@@ -62,8 +63,8 @@ export default function ChatHistorySidebar({
   };
 
   useEffect(() => {
-    refreshConversations();
-  }, [assistantId, apiKey, user.visitorId, refreshKey]);
+    void refreshConversations();
+  }, [assistantId, user.visitorId, refreshKey]);
 
   return (
     <aside className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-slate-950/80">
@@ -71,7 +72,7 @@ export default function ChatHistorySidebar({
         <h3 className="text-sm font-medium text-slate-300">Tarixçə</h3>
         <button
           type="button"
-          onClick={() => onSelectConversation(null)}
+          onClick={onNewConversation}
           className="rounded-lg px-2.5 py-1 text-xs text-indigo-300 hover:bg-indigo-500/10 transition"
         >
           + Yeni

@@ -21,74 +21,32 @@ import {
   saveAssistantsApiTestOptions,
 } from '@/lib/assistantsApiTestOptions';
 import { ApiTestDebugInfo } from '@/lib/assistantsApiTestLog';
+import { PUBLIC_ASSISTANTS } from '@/lib/assistantsConfig';
+import { AssistantId } from '@/lib/chatTypes';
 
-interface Assistant {
-  id: string;
+type AssistantCatalogItem = {
+  id: AssistantId;
   name: string;
   description: string;
   image: string;
-  apiKey: string;
-  apiId: string;
-  taskApiKey?: string;
-  supportsTaskMode?: boolean;
-}
-
-const defaultApiKey = process.env.NEXT_PUBLIC_API_KEY || '';
-const taskApiKey = process.env.NEXT_PUBLIC_TASK_API_KEY?.trim() || '';
-const personaAiGuideName = process.env.NEXT_PUBLIC_ASSISTANT_NAME?.trim() || 'PersonaAI Guide';
-
-const getApiKey = (index: number) => {
-  if (defaultApiKey) return defaultApiKey;
-  const keys = [
-    process.env.NEXT_PUBLIC_API_KEY_1,
-    process.env.NEXT_PUBLIC_API_KEY_2,
-    process.env.NEXT_PUBLIC_API_KEY_3,
-    process.env.NEXT_PUBLIC_API_KEY_4,
-  ];
-  return keys[index] || '';
+  chatConfigured: boolean;
+  taskConfigured: boolean;
+  supportsTaskMode: boolean;
 };
-
-const assistants: Assistant[] = [
-  {
-    id: 'personaai-guide',
-    name: personaAiGuideName,
-    description: process.env.NEXT_PUBLIC_ASSISTANT_DESCRIPTION?.trim() || 'PersonaAI söhbət köməkçisi',
-    image: '/assistants/assistant-purple.png',
-    apiKey: getApiKey(0),
-    apiId: '1',
-    taskApiKey: taskApiKey || undefined,
-    supportsTaskMode: !!taskApiKey,
-  },
-  {
-    id: 'serp',
-    name: 'SERP dəstək',
-    description: 'SERP sualları',
-    image: '/assistants/assistant-green.png',
-    apiKey: getApiKey(1),
-    apiId: '2',
-  },
-  {
-    id: 'texniki',
-    name: 'Texniki Kömək',
-    description: 'Texniki dəstək',
-    image: '/assistants/assistant-pink.png',
-    apiKey: getApiKey(2),
-    apiId: '3',
-  },
-  {
-    id: 'satis',
-    name: 'Satış',
-    description: 'Məhsul məlumatı',
-    image: '/assistants/assistant-orange.png',
-    apiKey: getApiKey(3),
-    apiId: '4',
-  },
-];
 
 export default function AssistantsPage() {
   const [user, setUser] = useState<ChatUser | null>(null);
-  const [selectedAssistantId, setSelectedAssistantId] = useState<string | null>(null);
+  const [assistants, setAssistants] = useState<AssistantCatalogItem[]>(
+    PUBLIC_ASSISTANTS.map((a) => ({
+      ...a,
+      chatConfigured: false,
+      taskConfigured: false,
+      supportsTaskMode: false,
+    }))
+  );
+  const [selectedAssistantId, setSelectedAssistantId] = useState<AssistantId | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(null);
+  const [forceNewConversation, setForceNewConversation] = useState(false);
   const [historyRefresh, setHistoryRefresh] = useState(0);
   const [apiTestOptions, setApiTestOptions] = useState<AssistantsApiTestOptions>(
     DEFAULT_ASSISTANTS_API_TEST_OPTIONS
@@ -98,7 +56,7 @@ export default function AssistantsPage() {
 
   const selectedAssistant = useMemo(
     () => assistants.find((a) => a.id === selectedAssistantId) ?? null,
-    [selectedAssistantId]
+    [assistants, selectedAssistantId]
   );
 
   useEffect(() => {
@@ -106,6 +64,17 @@ export default function AssistantsPage() {
     if (saved) setUser(saved);
     setApiTestOptions(loadAssistantsApiTestOptions());
     setAssistantMode(loadAssistantMode());
+
+    void fetch('/api/chat/assistants')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.success && Array.isArray(data.data)) {
+          setAssistants(data.data as AssistantCatalogItem[]);
+        }
+      })
+      .catch(() => {
+        // keep public defaults
+      });
   }, []);
 
   const handleApiTestOptionsChange = (next: AssistantsApiTestOptions) => {
@@ -121,6 +90,7 @@ export default function AssistantsPage() {
     setAssistantMode(mode);
     saveAssistantMode(mode);
     setConversationId(null);
+    setForceNewConversation(false);
   };
 
   const taskModeActive =
@@ -131,9 +101,10 @@ export default function AssistantsPage() {
     setUser(null);
     setSelectedAssistantId(null);
     setConversationId(null);
+    setForceNewConversation(false);
   };
 
-  const handleSelectAssistant = (id: string) => {
+  const handleSelectAssistant = (id: AssistantId) => {
     if (!user) return;
     const assistant = assistants.find((a) => a.id === id);
     if (!assistant?.supportsTaskMode && assistantMode === 'task') {
@@ -142,6 +113,12 @@ export default function AssistantsPage() {
     }
     setSelectedAssistantId(id);
     setConversationId(null);
+    setForceNewConversation(false);
+  };
+
+  const handleNewConversation = () => {
+    setConversationId(null);
+    setForceNewConversation(true);
   };
 
   return (
@@ -163,12 +140,7 @@ export default function AssistantsPage() {
           <p className="mt-1 text-sm text-slate-400">Daxil olun və köməkçi ilə söhbət edin</p>
         </div>
 
-        <ChatUserLogin
-          apiKey={defaultApiKey}
-          user={user}
-          onLogin={setUser}
-          onLogout={handleLogout}
-        />
+        <ChatUserLogin user={user} onLogin={setUser} onLogout={handleLogout} />
 
         <AssistantsApiTestPanel
           options={apiTestOptions}
@@ -183,7 +155,7 @@ export default function AssistantsPage() {
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             {assistants.map((assistant) => {
               const isSelected = selectedAssistantId === assistant.id;
-              const isDisabled = !user || !assistant.apiKey;
+              const isDisabled = !user || !assistant.chatConfigured;
 
               return (
                 <button
@@ -209,6 +181,9 @@ export default function AssistantsPage() {
                     </span>
                   )}
                   <p className="mt-1 text-xs text-slate-500 line-clamp-2">{assistant.description}</p>
+                  {!assistant.chatConfigured && (
+                    <p className="mt-1 text-[10px] text-rose-400">API key yoxdur</p>
+                  )}
                 </button>
               );
             })}
@@ -232,20 +207,23 @@ export default function AssistantsPage() {
                     ? 'Task · TASK_API_KEY · external_user_id tələb olunur'
                     : conversationId
                       ? `Chat · ${conversationId.slice(0, 8)}…`
-                      : 'Chat · yeni söhbət'}
+                      : forceNewConversation
+                        ? 'Chat · yeni söhbət'
+                        : 'Chat · aktiv thread (external_user_id)'}
                 </p>
               </div>
               {selectedAssistant.supportsTaskMode && (
                 <AssistantModeToggle
                   mode={assistantMode}
                   onChange={handleModeChange}
-                  taskAvailable={!!selectedAssistant.taskApiKey}
+                  taskAvailable={selectedAssistant.taskConfigured}
                 />
               )}
               <button
                 type="button"
                 onClick={() => {
                   setConversationId(null);
+                  setForceNewConversation(false);
                   setSelectedAssistantId(null);
                 }}
                 className="rounded-lg border border-slate-700 p-2 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
@@ -263,11 +241,14 @@ export default function AssistantsPage() {
                 <div className="h-36 shrink-0 overflow-hidden border-b border-slate-800 lg:h-auto lg:w-[220px] lg:border-b-0 lg:border-r">
                   <ChatHistorySidebar
                     assistantId={selectedAssistant.id}
-                    apiKey={selectedAssistant.apiKey}
                     user={user}
                     activeConversationId={conversationId}
                     refreshKey={historyRefresh}
-                    onSelectConversation={setConversationId}
+                    onSelectConversation={(id) => {
+                      setForceNewConversation(false);
+                      setConversationId(id);
+                    }}
+                    onNewConversation={handleNewConversation}
                     onConversationsChange={() => {}}
                   />
                 </div>
@@ -276,15 +257,16 @@ export default function AssistantsPage() {
                 <ChatInterface
                   assistantId={selectedAssistant.id}
                   assistantName={selectedAssistant.name}
-                  apiKey={selectedAssistant.apiKey}
-                  taskApiKey={selectedAssistant.taskApiKey}
+                  chatConfigured={selectedAssistant.chatConfigured}
+                  taskConfigured={selectedAssistant.taskConfigured}
                   assistantMode={assistantMode}
-                  apiId={selectedAssistant.apiId}
-                  defaultLanguage={taskModeActive ? 'auto' : 'az'}
+                  defaultLanguage="auto"
                   user={user}
                   conversationId={conversationId}
+                  forceNewConversation={forceNewConversation}
                   apiTestOptions={apiTestOptions}
                   onConversationIdChange={setConversationId}
+                  onForceNewConversationConsumed={() => setForceNewConversation(false)}
                   onRequestLogged={handleRequestLogged}
                   onSessionCompleted={() => setHistoryRefresh((k) => k + 1)}
                   onClose={() => setSelectedAssistantId(null)}

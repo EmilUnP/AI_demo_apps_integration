@@ -11,6 +11,7 @@ export interface ConversationSummary {
   updatedAt: string;
   assistantId: string;
   status?: 'active' | 'completed' | string;
+  satisfaction_rating?: number | null;
 }
 
 export interface StoredMessage {

@@ -8,15 +8,21 @@ import {
   loadChatUser,
   saveChatUser,
 } from '@/lib/chatSession';
+import { AssistantId } from '@/lib/chatTypes';
 
 interface ChatUserLoginProps {
-  apiKey: string;
+  assistantId?: AssistantId;
   user: ChatUser | null;
   onLogin: (user: ChatUser) => void;
   onLogout: () => void;
 }
 
-export default function ChatUserLogin({ apiKey, user, onLogin, onLogout }: ChatUserLoginProps) {
+export default function ChatUserLogin({
+  assistantId = 'personaai-guide',
+  user,
+  onLogin,
+  onLogout,
+}: ChatUserLoginProps) {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [loading, setLoading] = useState(false);
@@ -40,13 +46,16 @@ export default function ChatUserLogin({ apiKey, user, onLogin, onLogout }: ChatU
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          apiKey,
+          assistantId,
           name: name.trim(),
           email: email.trim(),
           visitor_id: visitorId,
         }),
       });
       const data = await res.json();
+      if (!res.ok || data.success === false) {
+        throw new Error(data.error || 'Login failed');
+      }
       const nextUser: ChatUser = {
         name: data.data?.name || name.trim(),
         email: data.data?.email || email.trim(),
@@ -54,7 +63,8 @@ export default function ChatUserLogin({ apiKey, user, onLogin, onLogout }: ChatU
       };
       saveChatUser(nextUser);
       onLogin(nextUser);
-    } catch {
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Login failed');
       const nextUser: ChatUser = { name: name.trim(), email: email.trim(), visitorId };
       saveChatUser(nextUser);
       onLogin(nextUser);

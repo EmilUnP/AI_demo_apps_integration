@@ -13,13 +13,22 @@ import {
 } from '@/lib/chatSession';
 import { AssistantsApiTestOptions } from '@/lib/assistantsApiTestOptions';
 import { ApiTestDebugInfo, extractTestDebug } from '@/lib/assistantsApiTestLog';
-import {
-  AssistantMode,
-  resolveApiKeyForMode,
-  TASK_QUICK_COMMANDS,
-} from '@/lib/assistantMode';
+import { AssistantMode, TASK_QUICK_COMMANDS } from '@/lib/assistantMode';
 import { parseTaskCommandFromResponse, resolveTaskDisplayContent, TaskCommandData } from '@/lib/taskCommand';
 import TaskCommandView from './TaskCommandView';
+import {
+  AssistantId,
+  CHAT_LANGUAGE_OPTIONS,
+  ChatLanguage,
+  ChatResponseType,
+  ChatSuggestion,
+  ClarificationOption,
+  isSafeHttpUrl,
+  parseChatSuccessData,
+} from '@/lib/chatTypes';
+import { useAssistantTts } from '@/lib/useAssistantTts';
+import { useMicStt } from '@/lib/useMicStt';
+import { consumeChatSse, isSseContentType } from '@/lib/chatStream';
 
 interface Message {
   id: string;
@@ -28,32 +37,26 @@ interface Message {
   timestamp: Date;
   sources?: Array<{ title: string; url?: string; page?: string }>;
   taskCommand?: TaskCommandData;
+  responseType?: ChatResponseType | null;
+  clarificationOptions?: ClarificationOption[];
+  suggestions?: ChatSuggestion[];
 }
 
-const CHAT_LANGUAGES = [
-  { value: 'auto', label: 'Auto' },
-  { value: 'az', label: 'Azərbaycan' },
-  { value: 'en', label: 'English' },
-  { value: 'tr', label: 'Türkçe' },
-  { value: 'ru', label: 'Русский' },
-] as const;
-
-type ChatLanguage = (typeof CHAT_LANGUAGES)[number]['value'];
-
 interface ChatInterfaceProps {
-  assistantId: string;
+  assistantId: AssistantId;
   /** Optional legacy share_link — v1 resolves assistant from API key */
   shareLink?: string;
   assistantName: string;
-  apiKey: string;
-  taskApiKey?: string;
   assistantMode?: AssistantMode;
-  apiId: string;
+  chatConfigured?: boolean;
+  taskConfigured?: boolean;
   defaultLanguage?: ChatLanguage;
   user: ChatUser | null;
   conversationId: string | null;
+  forceNewConversation?: boolean;
   apiTestOptions: AssistantsApiTestOptions;
   onConversationIdChange: (conversationId: string | null) => void;
+  onForceNewConversationConsumed?: () => void;
   onRequestLogged?: (entry: ApiTestDebugInfo) => void;
   onClose: () => void;
   onSessionCompleted?: () => void;
@@ -63,15 +66,16 @@ export default function ChatInterface({
   assistantId,
   shareLink,
   assistantName,
-  apiKey,
-  taskApiKey,
   assistantMode = 'chat',
-  apiId,
-  defaultLanguage = 'az',
+  chatConfigured = true,
+  taskConfigured = false,
+  defaultLanguage = 'auto',
   user,
   conversationId,
+  forceNewConversation = false,
   apiTestOptions,
   onConversationIdChange,
+  onForceNewConversationConsumed,
   onRequestLogged,
   onClose,
   onSessionCompleted,
@@ -82,20 +86,44 @@ export default function ChatInterface({
   const [isLoading, setIsLoading] = useState(false);
   const [showSessionFeedback, setShowSessionFeedback] = useState(false);
   const [sessionCompleted, setSessionCompleted] = useState(false);
+  const [savedRating, setSavedRating] = useState<number | null>(null);
   const [feedbackRating, setFeedbackRating] = useState<number | null>(null);
   const [feedbackText, setFeedbackText] = useState('');
   const [isSubmittingFeedback, setIsSubmittingFeedback] = useState(false);
   const [feedbackError, setFeedbackError] = useState('');
-  const [ttsPlayingId, setTtsPlayingId] = useState<string | null>(null);
-  const [ttsLoadingId, setTtsLoadingId] = useState<string | null>(null);
-  const [ttsError, setTtsError] = useState('');
-  const visitorId = user?.visitorId || `guest-${apiId}-${Date.now()}`;
+  const visitorId = user?.visitorId || `guest-${assistantId}-${Date.now()}`;
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const audioObjectUrlRef = useRef<string | null>(null);
   const isTaskMode = assistantMode === 'task';
-  const activeApiKey = resolveApiKeyForMode(assistantMode, apiKey, taskApiKey);
+
+  const {
+    isRecording,
+    isTranscribing,
+    error: sttError,
+    toggleRecording,
+  } = useMicStt({
+    assistantId,
+    language,
+    onTranscript: (text) => {
+      setInputMessage((prev) => (prev.trim() ? `${prev.trim()} ${text}` : text));
+      inputRef.current?.focus();
+    },
+  });
+
+  const {
+    play: playTts,
+    playingId: ttsPlayingId,
+    loadingId: ttsLoadingId,
+    error: ttsError,
+    setError: setTtsError,
+    stop: stopTts,
+  } = useAssistantTts({
+    assistantId,
+    language,
+    apiTestOptions,
+    onRequestLogged,
+    includeTestDebug: true,
+  });
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -106,36 +134,15 @@ export default function ChatInterface({
   }, [messages]);
 
   useEffect(() => {
-    return () => {
-      if (audioRef.current) {
-        audioRef.current.pause();
-        audioRef.current = null;
-      }
-      if (audioObjectUrlRef.current) {
-        URL.revokeObjectURL(audioObjectUrlRef.current);
-        audioObjectUrlRef.current = null;
-      }
-    };
-  }, []);
-
-  useEffect(() => {
     if (!conversationId) {
       setMessages([]);
       setSessionCompleted(false);
       setShowSessionFeedback(false);
       setFeedbackRating(null);
       setFeedbackText('');
-      setTtsPlayingId(null);
-      setTtsLoadingId(null);
+      setSavedRating(null);
       setTtsError('');
-      if (audioRef.current) {
-        audioRef.current.pause();
-        audioRef.current = null;
-      }
-      if (audioObjectUrlRef.current) {
-        URL.revokeObjectURL(audioObjectUrlRef.current);
-        audioObjectUrlRef.current = null;
-      }
+      stopTts();
       return;
     }
 
@@ -143,17 +150,30 @@ export default function ChatInterface({
       const cached = loadStoredMessages(conversationId).map(fromStoredMessage);
       if (cached.length > 0) setMessages(cached);
 
-      if (!apiKey) return;
-
       try {
-        const params = new URLSearchParams({ apiKey });
-        const res = await fetch(`/api/chat/conversations/${encodeURIComponent(conversationId)}/messages?${params}`);
+        const params = new URLSearchParams({ assistantId });
+        const res = await fetch(
+          `/api/chat/conversations/${encodeURIComponent(conversationId)}/messages?${params}`
+        );
         const data = await res.json();
         const threadStatus = data.data?.status as string | undefined;
+        const rating =
+          typeof data.data?.satisfaction_rating === 'number'
+            ? data.data.satisfaction_rating
+            : null;
+
         if (threadStatus === 'completed') {
           setSessionCompleted(true);
+          setSavedRating(rating);
+          persistConversation(
+            conversationId,
+            cached[0]?.content || 'Söhbət',
+            'completed',
+            rating
+          );
         } else {
           setSessionCompleted(false);
+          setSavedRating(null);
         }
 
         const raw = data.data?.messages || [];
@@ -177,10 +197,15 @@ export default function ChatInterface({
       }
     };
 
-    loadHistory();
-  }, [conversationId, apiKey, assistantId]);
+    void loadHistory();
+  }, [conversationId, assistantId]);
 
-  const persistConversation = (id: string, preview: string, status: ConversationSummary['status'] = 'active') => {
+  const persistConversation = (
+    id: string,
+    preview: string,
+    status: ConversationSummary['status'] = 'active',
+    satisfaction_rating?: number | null
+  ) => {
     upsertConversationSummary({
       id,
       title: preview.slice(0, 48) || 'Söhbət',
@@ -188,6 +213,7 @@ export default function ChatInterface({
       updatedAt: new Date().toISOString(),
       assistantId,
       status,
+      satisfaction_rating,
     });
   };
 
@@ -195,11 +221,42 @@ export default function ChatInterface({
     saveStoredMessages(id, nextMessages.map(toStoredMessage));
   };
 
+  const markConversationCompleted = async () => {
+    if (!conversationId) return;
+    try {
+      const params = new URLSearchParams({ assistantId });
+      const res = await fetch(
+        `/api/chat/conversations/${encodeURIComponent(conversationId)}/messages?${params}`
+      );
+      const data = await res.json();
+      if (data.data?.status === 'completed') {
+        setSessionCompleted(true);
+        setShowSessionFeedback(false);
+        const rating =
+          typeof data.data?.satisfaction_rating === 'number'
+            ? data.data.satisfaction_rating
+            : null;
+        setSavedRating(rating);
+        persistConversation(
+          conversationId,
+          messages.find((m) => m.role === 'user')?.content || 'Söhbət',
+          'completed',
+          rating
+        );
+        onSessionCompleted?.();
+      }
+    } catch {
+      // ignore
+    }
+  };
+
   const submitSessionFeedback = async (skipRating = false) => {
-    if (!conversationId || !apiKey) return;
+    if (!conversationId) return;
 
     if (!skipRating && feedbackRating == null) {
-      setFeedbackError('Zəhmət olmasa 1–5 ulduz seçin və ya "Qiymətləndirmədən bitir" düyməsini istifadə edin.');
+      setFeedbackError(
+        'Zəhmət olmasa 1–5 ulduz seçin və ya "Qiymətləndirmədən bitir" düyməsini istifadə edin.'
+      );
       return;
     }
 
@@ -211,7 +268,7 @@ export default function ChatInterface({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          apiKey: apiKey.trim(),
+          assistantId,
           conversation_id: conversationId,
           ...(skipRating
             ? { skip_rating: true }
@@ -228,12 +285,29 @@ export default function ChatInterface({
         throw new Error(data.error || 'Feedback göndərilmədi');
       }
 
-      setSessionCompleted(true);
-      setShowSessionFeedback(false);
-      if (conversationId) {
-        persistConversation(conversationId, messages.find((m) => m.role === 'user')?.content || 'Söhbət', 'completed');
+      const status = data.data?.status as string | undefined;
+      const alreadyCompleted = data.data?.already_completed === true;
+
+      if (status === 'completed' || alreadyCompleted || res.ok) {
+        if (status === 'completed' || alreadyCompleted) {
+          setSessionCompleted(true);
+          setShowSessionFeedback(false);
+          const rating =
+            typeof data.data?.satisfaction_rating === 'number'
+              ? data.data.satisfaction_rating
+              : feedbackRating;
+          setSavedRating(rating ?? null);
+          persistConversation(
+            conversationId,
+            messages.find((m) => m.role === 'user')?.content || 'Söhbət',
+            'completed',
+            rating ?? null
+          );
+          onSessionCompleted?.();
+        } else {
+          await markConversationCompleted();
+        }
       }
-      onSessionCompleted?.();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Feedback göndərilmədi';
       setFeedbackError(msg);
@@ -247,6 +321,7 @@ export default function ChatInterface({
     setShowSessionFeedback(false);
     setFeedbackRating(null);
     setFeedbackText('');
+    setSavedRating(null);
     setMessages([]);
     onConversationIdChange(null);
   };
@@ -262,160 +337,74 @@ export default function ChatInterface({
     setFeedbackRating(null);
     setFeedbackText('');
     setFeedbackError('');
+    setSavedRating(null);
     setMessages([]);
     onConversationIdChange(null);
     inputRef.current?.focus();
   };
 
-  // Helper function to parse sources from different formats
-  const parseSources = (sourceData: any): Array<{ title: string; url?: string; page?: string }> | undefined => {
+  const parseSources = (
+    sourceData: unknown
+  ): Array<{ title: string; url?: string; page?: string }> | undefined => {
     if (!sourceData) return undefined;
-    
-    // If it's already an array of objects
-    if (Array.isArray(sourceData)) {
-      return sourceData.map((src: any) => {
-        if (typeof src === 'string') {
-          // Handle string format like "Page 1Giriş" or "Giriş"
-          return { title: src, page: src.includes('Page') ? src : undefined };
-        }
-        return {
-          title: src.title || src.name || src.page || '',
-          url: src.url || src.link,
-          page: src.page || src.pageNumber
-        };
-      });
-    }
-    
-    // If it's a single object
-    if (typeof sourceData === 'object') {
-      return [{
-        title: sourceData.title || sourceData.name || sourceData.page || '',
-        url: sourceData.url || sourceData.link,
-        page: sourceData.page || sourceData.pageNumber
-      }];
-    }
-    
-    // If it's a string, try to parse it
-    if (typeof sourceData === 'string') {
-      // Try to extract structured data from string
-      const parts = sourceData.split(/[""]/).filter(p => p.trim());
-      if (parts.length > 0) {
-        return parts.map(part => ({ title: part.trim() }));
+
+    const sanitize = (src: Record<string, unknown> | string) => {
+      if (typeof src === 'string') {
+        return { title: src, page: src.includes('Page') ? src : undefined };
       }
+      const url = typeof src.url === 'string' ? src.url : typeof src.link === 'string' ? src.link : undefined;
+      return {
+        title: String(src.title || src.name || src.page || ''),
+        url: url && isSafeHttpUrl(url) ? url : undefined,
+        page: typeof src.page === 'string' ? src.page : typeof src.pageNumber === 'string' ? src.pageNumber : undefined,
+      };
+    };
+
+    if (Array.isArray(sourceData)) {
+      return sourceData.map((src) =>
+        sanitize(typeof src === 'object' && src ? (src as Record<string, unknown>) : String(src))
+      );
+    }
+
+    if (typeof sourceData === 'object') {
+      return [sanitize(sourceData as Record<string, unknown>)];
+    }
+
+    if (typeof sourceData === 'string') {
+      const parts = sourceData.split(/[""]/).filter((p) => p.trim());
+      if (parts.length > 0) return parts.map((part) => ({ title: part.trim() }));
       return [{ title: sourceData }];
     }
-    
+
     return undefined;
   };
 
   const playAssistantTts = async (message: Message) => {
-    if (isTaskMode || !message.content.trim() || !activeApiKey) return;
-
-    if (ttsPlayingId === message.id && audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.currentTime = 0;
-      setTtsPlayingId(null);
-      return;
-    }
-
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current = null;
-    }
-    if (audioObjectUrlRef.current) {
-      URL.revokeObjectURL(audioObjectUrlRef.current);
-      audioObjectUrlRef.current = null;
-    }
-
-    setTtsError('');
-    setTtsLoadingId(message.id);
-
-    try {
-      const response = await fetch('/api/chat/tts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text: message.content,
-          apiKey: activeApiKey,
-          ...(apiTestOptions.includeTtsLanguage ? { language } : {}),
-          ...(shareLink?.trim() ? { assistant: shareLink.trim() } : {}),
-          apiTestOptions,
-          includeTestDebug: true,
-        }),
-      });
-
-      const contentType = response.headers.get('content-type') || '';
-      if (!response.ok) {
-        let errorText = `TTS failed (${response.status})`;
-        if (contentType.includes('application/json')) {
-          const errPayload = await response.json().catch(() => null);
-          const { debug, data: err } = extractTestDebug(errPayload);
-          if (debug) onRequestLogged?.(debug);
-          errorText =
-            (err && typeof err === 'object' && ('error' in err || 'message' in err)
-              ? String((err as { error?: string; message?: string }).error || (err as { message?: string }).message)
-              : errorText) || errorText;
-        }
-        throw new Error(errorText);
-      }
-
-      let blob: Blob;
-      if (contentType.includes('application/json')) {
-        const payload = await response.json();
-        const { debug, data } = extractTestDebug(payload);
-        if (debug) onRequestLogged?.(debug);
-        const audioBase64 =
-          data && typeof data === 'object' && 'audioBase64' in data
-            ? String((data as { audioBase64?: string }).audioBase64 || '')
-            : '';
-        if (!audioBase64) throw new Error('TTS audio missing in response');
-        const binary = atob(audioBase64);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-        blob = new Blob([bytes], {
-          type:
-            data && typeof data === 'object' && 'audioContentType' in data
-              ? String((data as { audioContentType?: string }).audioContentType || 'audio/mpeg')
-              : 'audio/mpeg',
-        });
-      } else {
-        blob = await response.blob();
-      }
-      const objectUrl = URL.createObjectURL(blob);
-      audioObjectUrlRef.current = objectUrl;
-
-      const audio = new Audio(objectUrl);
-      audioRef.current = audio;
-      audio.onended = () => {
-        setTtsPlayingId(null);
-      };
-      audio.onerror = () => {
-        setTtsPlayingId(null);
-        setTtsError('Audio oxuna bilmədi.');
-      };
-
-      setTtsPlayingId(message.id);
-      await audio.play();
-    } catch (error: unknown) {
-      setTtsPlayingId(null);
-      setTtsError(error instanceof Error ? error.message : 'TTS xətası');
-    } finally {
-      setTtsLoadingId(null);
-    }
+    if (isTaskMode || !message.content.trim() || sessionCompleted) return;
+    await playTts(message.id, message.content);
   };
 
-  const sendMessageWithText = async (text: string) => {
-    if (!text.trim() || isLoading) return;
+  const sendMessageWithText = async (
+    text: string,
+    options?: { optionId?: string }
+  ) => {
+    if (!text.trim() || isLoading || sessionCompleted) return;
 
     const userMessage: Message = {
       id: Date.now().toString(),
       role: 'user',
       content: text.trim(),
-      timestamp: new Date()
+      timestamp: new Date(),
     };
 
-    setMessages(prev => {
-      const next = [...prev, userMessage];
+    setMessages((prev) => {
+      // Clear prior clarification/suggestion chips once the user continues
+      const cleared = prev.map((m) =>
+        m.role === 'assistant'
+          ? { ...m, clarificationOptions: undefined, suggestions: undefined }
+          : m
+      );
+      const next = [...cleared, userMessage];
       if (conversationId && !isTaskMode) persistMessages(conversationId, next);
       return next;
     });
@@ -423,12 +412,11 @@ export default function ChatInterface({
     setIsLoading(true);
 
     try {
-      if (!activeApiKey) {
-        throw new Error(
-          isTaskMode
-            ? 'Task API key is not configured. Add NEXT_PUBLIC_TASK_API_KEY to .env.local.'
-            : 'API key is not configured for this assistant. Please check your .env.local file.'
-        );
+      if (isTaskMode && !taskConfigured) {
+        throw new Error('Task API key is not configured. Add TASK_API_KEY to .env.local.');
+      }
+      if (!isTaskMode && !chatConfigured) {
+        throw new Error('API key is not configured for this assistant. Check CHAT_API_KEY in .env.local.');
       }
 
       if (isTaskMode && !user?.visitorId && !visitorId) {
@@ -438,8 +426,24 @@ export default function ChatInterface({
       const includeExternalUserId = isTaskMode || apiTestOptions.includeExternalUserId;
       const includeConversationMemory = !isTaskMode && apiTestOptions.includeConversationMemory;
 
+      // With external_user_id, omit conversation_id to resume the active thread.
+      // Only send new_conversation when the user explicitly taps New Chat.
+      const conversationFields = !includeConversationMemory
+        ? {}
+        : forceNewConversation
+          ? { new_conversation: true as const }
+          : conversationId
+            ? { conversation_id: conversationId }
+            : {};
+
+      // Keep JSON path when API test debug is on; otherwise stream deltas
+      const useStream = !isTaskMode && !onRequestLogged;
+
       const proxyBody = {
         message: userMessage.content,
+        assistantId,
+        assistantMode,
+        stream: useStream,
         ...(includeExternalUserId ? { external_user_id: user?.visitorId || visitorId } : {}),
         ...(apiTestOptions.includeExternalUserName && user?.name?.trim()
           ? { external_user_name: user.name.trim() }
@@ -448,289 +452,187 @@ export default function ChatInterface({
           ? { external_user_email: user.email.trim() }
           : {}),
         ...(apiTestOptions.includeChatLanguage ? { language } : {}),
-        ...(includeConversationMemory
-          ? conversationId
-            ? { conversation_id: conversationId }
-            : { new_conversation: true }
-          : {}),
+        ...conversationFields,
+        ...(options?.optionId ? { option_id: options.optionId } : {}),
         ...(shareLink?.trim() ? { assistant: shareLink.trim() } : {}),
-        apiKey: activeApiKey,
-        assistantMode,
         apiTestOptions,
-        includeTestDebug: true,
+        includeTestDebug: !!onRequestLogged,
       };
 
       const response = await fetch('/api/chat', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(proxyBody)
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(proxyBody),
       });
 
+      if (forceNewConversation) onForceNewConversationConsumed?.();
 
       if (!response.ok) {
-        // Try to get error details from response
         let errorDetails = `HTTP ${response.status}: ${response.statusText}`;
         let errorCode = '';
-        
+
         try {
           const errorPayload = await response.json();
           const { debug, data: errorRaw } = extractTestDebug(errorPayload);
-          const errorData = (errorRaw ?? errorPayload ?? {}) as any;
+          const errorData = (errorRaw ?? errorPayload ?? {}) as Record<string, unknown>;
           if (debug) onRequestLogged?.(debug);
-          console.error('API Error Response:', errorData);
-          
-          // Handle different error formats
-          if (typeof errorData === 'string') {
-            // Try to parse if it's a JSON string
-            try {
-              const parsed = JSON.parse(errorData);
-              errorCode = parsed.code || '';
-              errorDetails = parsed.message || parsed.error || errorData;
-            } catch {
-              errorDetails = errorData;
-            }
-          } else if (errorData.code && errorData.message) {
-            // Format: { code: "500", message: "..." }
-            errorCode = errorData.code;
-            errorDetails = errorData.message;
-          } else if (errorData.success === false) {
-            // API documentation format: { success: false, error: "...", code: "..." }
-            errorCode = errorData.code || '';
-            errorDetails = typeof errorData.error === 'string'
-              ? errorData.error
-              : errorData.message || 'Unknown error';
-          } else if (errorData.error) {
-            errorDetails = typeof errorData.error === 'string' ? errorData.error : JSON.stringify(errorData.error);
-            errorCode = errorData.code || '';
-          } else if (errorData.message) {
-            errorDetails = errorData.message;
-            errorCode = errorData.code || '';
-          } else {
-            // Convert object to readable string
-            errorDetails = JSON.stringify(errorData, null, 2);
+
+          errorCode = String(errorData.code || '');
+          if (errorCode === 'CONVERSATION_NOT_ACTIVE' || response.status === 409) {
+            setSessionCompleted(true);
+            await markConversationCompleted();
+            throw new Error('Bu söhbət artıq tamamlanıb. Yeni söhbət başladın.');
           }
-        } catch (e) {
-          // Try to get as text
-          try {
-            const errorText = await response.text();
-            console.error('API Error Text:', errorText);
-            
-            // Try to parse JSON string
-            try {
-              const parsed = JSON.parse(errorText);
-              errorCode = parsed.code || '';
-              errorDetails = parsed.message || parsed.error || errorText;
-            } catch {
-              errorDetails = errorText || errorDetails;
-            }
-          } catch {
-            // Use default
-          }
+
+          if (typeof errorData.error === 'string') errorDetails = errorData.error;
+          else if (typeof errorData.message === 'string') errorDetails = errorData.message;
+        } catch (parseErr) {
+          if (parseErr instanceof Error && parseErr.message.includes('tamamlanıb')) throw parseErr;
         }
-        
-        // Create error with code for better handling
+
         const error = new Error(errorDetails);
-        (error as any).code = errorCode;
+        (error as Error & { code?: string }).code = errorCode;
         throw error;
       }
 
-      const rawPayload = await response.json();
-      const { debug, data: rawData } = extractTestDebug(rawPayload);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const data = (rawData ?? rawPayload ?? {}) as any;
-      if (debug) onRequestLogged?.(debug);
+      let data: Record<string, any> = {};
+      const contentType = response.headers.get('content-type');
 
-      // Log full response for debugging
-      console.log('Full API Response:', JSON.stringify(data, null, 2));
+      if (useStream && isSseContentType(contentType)) {
+        const streamingId = `stream-${Date.now()}`;
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: streamingId,
+            role: 'assistant',
+            content: '',
+            timestamp: new Date(),
+          },
+        ]);
 
-      // Handle response according to API documentation format:
-      // Success: { success: true, data: { response: "...", ... } }
-      // Error: { success: false, error: "...", code: "..." }
-      
-      let responseText = '';
-      let sources: Array<{ title: string; url?: string; page?: string }> | undefined = undefined;
-
-      // Check if response follows the documented format
-      if (data.success === true && data.data) {
-        responseText = data.data.response || data.data.message || data.data.text || '';
-        sources = parseSources(data.data.sources || data.data.source);
-
-        const returnedConversationId = data.data.conversation_id as string | undefined;
-        const activeConversationId = returnedConversationId || conversationId;
-
-        if (returnedConversationId && returnedConversationId !== conversationId) {
-          onConversationIdChange(returnedConversationId);
-        }
-
-        if (activeConversationId) {
-          persistConversation(activeConversationId, userMessage.content);
-        }
-        
-        if (data.data.usage) {
-          console.log('API Usage:', data.data.usage);
-        }
-      } else if (data.success === false) {
-        // Error response format from API
-        const errorCode = data.code || 'API_ERROR';
-        const errorMessage = data.error || data.message || 'Unknown error';
-        const errorDetails = data.details?.message || '';
-        
-        console.error('API Error Response:', {
-          code: errorCode,
-          error: errorMessage,
-          details: errorDetails
+        const finalPayload = await consumeChatSse(response, {
+          onDelta: (delta) => {
+            if (!delta) return;
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === streamingId ? { ...m, content: m.content + delta } : m
+              )
+            );
+          },
         });
-        
-        // Handle specific error codes from documentation
-        let userFriendlyMessage = errorMessage;
-        if (errorCode === 'MISSING_AUTH' || errorCode === 'INVALID_API_KEY') {
+
+        data =
+          finalPayload && typeof finalPayload === 'object'
+            ? (finalPayload as Record<string, any>)
+            : { success: true, data: finalPayload };
+
+        // Normalize: final event may be { success, data } or the data object itself
+        if (data.success == null && (data.response || data.conversation_id || data.response_type)) {
+          data = { success: true, data };
+        }
+      } else {
+        const rawPayload = await response.json();
+        const { debug, data: rawData } = extractTestDebug(rawPayload);
+        data = (rawData ?? rawPayload ?? {}) as Record<string, any>;
+        if (debug) onRequestLogged?.(debug);
+      }
+
+      if (data.success === false) {
+        const errorCode = data.code || 'API_ERROR';
+        let userFriendlyMessage = data.error || data.message || 'Unknown error';
+        if (errorCode === 'CONVERSATION_NOT_ACTIVE') {
+          setSessionCompleted(true);
+          await markConversationCompleted();
+          userFriendlyMessage = 'Bu söhbət artıq tamamlanıb. Yeni söhbət başladın.';
+        } else if (errorCode === 'MISSING_AUTH' || errorCode === 'INVALID_API_KEY') {
           userFriendlyMessage = 'API açarı yanlışdır və ya təyin edilməyib.';
-        } else if (errorCode === 'UNAUTHORIZED') {
-          userFriendlyMessage = 'API açarı bu köməkçi üçün icazə verilmir.';
-        } else if (errorCode === 'ASSISTANT_NOT_FOUND') {
-          userFriendlyMessage = 'Köməkçi tapılmadı. API açarını və köməkçi konfiqurasiyasını yoxlayın.';
-        } else if (errorCode === 'MISSING_FIELDS' || errorCode === 'MISSING_SHARE_LINK') {
-          userFriendlyMessage = errorMessage;
+        } else if (errorCode === 'ASSISTANT_NOT_CONFIGURED') {
+          userFriendlyMessage = 'Bu köməkçi üçün server API açarı təyin edilməyib.';
         } else if (errorCode === 'RATE_LIMIT_EXCEEDED') {
           userFriendlyMessage = 'Sürət limiti aşılıb. Zəhmət olmasa bir az gözləyin.';
         }
-        
         throw new Error(userFriendlyMessage);
-      } else {
-        // Legacy format or unknown format - try to extract response
-        if (Array.isArray(data)) {
-          // Array format - filter out errors
-          const validMessages = data.filter((msg: any) => {
-            const text = msg.response || msg.message || msg.text || msg.content || msg.answer || '';
-            const errorPhrases = [
-              'I apologize, but I\'m having trouble processing your request',
-              'trouble processing your request',
-              'please try again',
-              'error occurred'
-            ];
-            return text && !errorPhrases.some(phrase => text.toLowerCase().includes(phrase.toLowerCase()));
-          });
-          
-          if (validMessages.length > 0) {
-            responseText = validMessages[0].response || validMessages[0].message || validMessages[0].text || '';
-            sources = parseSources(validMessages[0].sources || validMessages[0].source);
-          }
-        } else {
-          // Single object - try common fields
-          responseText = data.response || data.message || data.text || data.content || data.answer || '';
-          sources = parseSources(data.sources || data.source);
-          
-          // Filter out error messages in text
-          const errorPhrases = [
-            'I apologize, but I\'m having trouble processing your request right now. Please try again.',
-            'I apologize, but I\'m having trouble processing your request',
-            'trouble processing your request right now'
-          ];
-          
-          if (errorPhrases.some(phrase => responseText.includes(phrase))) {
-            const errorIndex = responseText.indexOf('I apologize');
-            if (errorIndex > 0) {
-              responseText = responseText.substring(0, errorIndex).trim();
-            }
-          }
-        }
+      }
+
+      const parsed = parseChatSuccessData(data);
+      const responseText = parsed.responseText;
+      const sources = parseSources(parsed.sources);
+      const returnedConversationId = parsed.conversationId;
+      const activeConversationId = returnedConversationId || conversationId;
+
+      if (returnedConversationId && returnedConversationId !== conversationId) {
+        onConversationIdChange(returnedConversationId);
+      }
+      if (activeConversationId) {
+        persistConversation(activeConversationId, userMessage.content);
       }
 
       const taskCommand = isTaskMode ? parseTaskCommandFromResponse(data) : null;
       const displayContent = resolveTaskDisplayContent(responseText, taskCommand);
+      const hasClarification =
+        parsed.responseType === 'clarification' || parsed.clarificationOptions.length > 0;
+      const hasSuggestions = parsed.suggestions.length > 0;
 
-      if (displayContent || taskCommand) {
+      if (displayContent || taskCommand || hasClarification || hasSuggestions) {
         const assistantMessage: Message = {
           id: (Date.now() + 1).toString(),
           role: 'assistant',
-          content: displayContent || responseText.trim(),
+          content:
+            displayContent ||
+            responseText.trim() ||
+            (hasClarification ? 'Zəhmət olmasa bir seçim edin:' : ''),
           timestamp: new Date(),
-          sources: sources,
+          sources,
           taskCommand: taskCommand ?? undefined,
+          responseType: parsed.responseType,
+          clarificationOptions: hasClarification ? parsed.clarificationOptions : undefined,
+          suggestions: hasSuggestions ? parsed.suggestions : undefined,
         };
 
-        setMessages(prev => {
-          const next = [...prev, assistantMessage];
-          const activeId = (data.success === true && data.data?.conversation_id) || conversationId;
-          if (activeId && !isTaskMode) persistMessages(activeId, next);
+        setMessages((prev) => {
+          // Replace streaming placeholder if present
+          const withoutStream = prev.filter((m) => !m.id.startsWith('stream-'));
+          const next = [...withoutStream, assistantMessage];
+          if (activeConversationId && !isTaskMode) persistMessages(activeConversationId, next);
           return next;
         });
-      } else if (!data.success) {
-        // If it was an error response but no text extracted, show the error
+      } else if (data.success !== true) {
         throw new Error(data.error || 'No response received from API');
-      } else {
-        console.warn('No valid response text found in API response:', data);
       }
-    } catch (error: any) {
-      console.error('Chat API Error Details:', {
-        error,
-        message: error?.message,
-        assistantId,
-        apiId,
-        hasApiKey: !!apiKey
-      });
-
+    } catch (error: unknown) {
+      const err = error as Error & { code?: string };
       let errorMessageText = 'Xəta baş verdi. Zəhmət olmasa yenidən cəhd edin.';
-      const errorCode = (error as any)?.code || '';
-      
-      if (error?.message) {
-        // Parse error message if it's a JSON string
-        let parsedMessage = error.message;
-        let parsedCode = errorCode;
-        
-        // Try to parse JSON string in error message
-        if (error.message.startsWith('{') || error.message.startsWith('"')) {
-          try {
-            const parsed = JSON.parse(error.message);
-            parsedCode = parsed.code || parsedCode;
-            parsedMessage = parsed.message || parsed.error || error.message;
-          } catch {
-            // Not JSON, use as is
-          }
-        }
-        
-        // Check for specific error codes from API documentation
-        if (parsedCode === 'MISSING_AUTH' || parsedCode === 'INVALID_API_KEY') {
-          errorMessageText = 'API açarı yanlışdır və ya təyin edilməyib.';
-        } else if (parsedCode === 'UNAUTHORIZED' || parsedCode === '403') {
-          errorMessageText = 'API açarı bu köməkçi üçün icazə verilmir.';
-        } else if (parsedCode === 'ASSISTANT_NOT_FOUND' || parsedCode === '404') {
-          errorMessageText = 'Köməkçi tapılmadı. API açarını və köməkçi konfiqurasiyasını yoxlayın.';
-        } else if (parsedCode === 'MISSING_FIELDS' || parsedCode === 'MISSING_SHARE_LINK' || parsedCode === '400') {
-          errorMessageText = parsedMessage;
-        } else if (parsedCode === 'RATE_LIMIT_EXCEEDED' || parsedCode === '429') {
-          errorMessageText = 'Sürət limiti aşılıb. Zəhmət olmasa bir az gözləyin.';
-        } else if (parsedCode === '500' || error.message.includes('500') || parsedMessage.includes('server error')) {
-          errorMessageText = 'Server tərəfində xəta baş verdi. Bu, xarici API serverində problem olduğunu göstərir. Zəhmət olmasa daha sonra yenidən cəhd edin və ya API serverinin loglarını yoxlayın.';
-        } else if (error.message.includes('API key') || error.message.includes('MISSING_AUTH')) {
-          errorMessageText = 'API açarı təyin edilməyib. Zəhmət olmasa .env.local faylını yoxlayın.';
-        } else if (error.message.includes('404')) {
-          errorMessageText = 'API endpoint tapılmadı. Zəhmət olmasa API URL-i yoxlayın.';
-        } else if (error.message.includes('401')) {
-          errorMessageText = 'API açarı yanlışdır və ya icazə yoxdur.';
-        } else if (error.message.includes('FUNCTION_INVOCATION_FAILED')) {
-          errorMessageText = 'Server tərəfində xəta baş verdi. Bu, xarici API serverində problem olduğunu göstərir.';
-        } else if (error.message.includes('Failed to fetch')) {
-          errorMessageText = 'Serverə bağlanıla bilmədi. İnternet bağlantınızı və ya server statusunu yoxlayın.';
+      if (err?.message) {
+        if (err.message.includes('API key') || err.message.includes('CHAT_API_KEY')) {
+          errorMessageText = 'Server API açarı təyin edilməyib. .env.local faylını yoxlayın.';
+        } else if (err.message.includes('Failed to fetch')) {
+          errorMessageText = 'Serverə bağlanıla bilmədi. İnternet bağlantınızı yoxlayın.';
         } else {
-          // Use the parsed message directly (already translated if possible)
-          errorMessageText = parsedMessage;
+          errorMessageText = err.message;
         }
       }
 
-      const errorMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: errorMessageText,
-        timestamp: new Date()
-      };
-      setMessages(prev => [...prev, errorMessage]);
+      setMessages((prev) => [
+        ...prev.filter((m) => !m.id.startsWith('stream-')),
+        {
+          id: (Date.now() + 1).toString(),
+          role: 'assistant',
+          content: errorMessageText,
+          timestamp: new Date(),
+        },
+      ]);
     } finally {
       setIsLoading(false);
       inputRef.current?.focus();
     }
+  };
+
+  const handleClarificationOption = (option: ClarificationOption) => {
+    void sendMessageWithText(option.label, { optionId: option.id });
+  };
+
+  const handleSuggestion = (suggestion: ChatSuggestion) => {
+    void sendMessageWithText(suggestion.message);
   };
 
   const sendMessage = () => {
@@ -763,7 +665,6 @@ export default function ChatInterface({
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-slate-900">
-      {/* Messages Area */}
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-6 space-y-4">
         {messages.length === 0 ? (
           <div className="flex items-center justify-center h-full">
@@ -778,7 +679,7 @@ export default function ChatInterface({
               </h3>
               <p className="text-slate-400 max-w-sm mx-auto">
                 {isTaskMode
-                  ? 'Slash əmrləri (/help, /taskinfo) və ya təbii dil. Task rejimində eyni external_user_id istifadə olunur; ticketlər conversation_id-dən asılı deyil.'
+                  ? 'Slash əmrləri (/help, /taskinfo) və ya təbii dil. Task rejimində eyni external_user_id istifadə olunur.'
                   : `Sualınızı yazın və ${assistantName} cavab versin`}
               </p>
             </div>
@@ -786,116 +687,165 @@ export default function ChatInterface({
         ) : (
           <>
             {messages.map((message, index) => {
-              const isTaskCommandUi =
-                message.role === 'assistant' && !!message.taskCommand;
+              const isTaskCommandUi = message.role === 'assistant' && !!message.taskCommand;
               const isTableMessage =
                 message.role === 'assistant' &&
                 messageHasTable(message.content) &&
                 !isTaskCommandUi;
 
               return (
-              <div
-                key={message.id}
-                className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'} message-enter`}
-                style={{ animationDelay: `${index * 50}ms` }}
-              >
                 <div
-                  className={`rounded-2xl px-5 py-3.5 shadow-lg ${
-                    message.role === 'user'
-                      ? 'max-w-[80%] bg-gradient-to-br from-indigo-600 to-indigo-700 text-white'
-                      : isTableMessage || isTaskCommandUi
-                        ? 'w-full max-w-full bg-slate-800/90 backdrop-blur text-slate-100 border border-slate-700/50'
-                        : isTaskMode && message.role === 'assistant'
-                          ? 'max-w-[92%] bg-slate-800/90 backdrop-blur text-slate-100 border border-amber-900/30'
-                        : 'max-w-[85%] bg-slate-800/90 backdrop-blur text-slate-100 border border-slate-700/50'
-                  } transition-all duration-200 hover:shadow-xl ${
-                    isTaskCommandUi ? 'border-amber-900/30' : ''
-                  }`}
+                  key={message.id}
+                  className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'} message-enter`}
+                  style={{ animationDelay: `${index * 50}ms` }}
                 >
-                  {isTaskCommandUi && message.taskCommand ? (
-                    <TaskCommandView
-                      command={message.taskCommand}
-                      fallbackText={message.content || undefined}
-                      onPrefillMessage={handlePrefillTaskCommand}
-                    />
-                  ) : (
-                    <ChatMessageContent content={message.content} variant={message.role} />
-                  )}
-                  
-                  {/* Display sources if available */}
-                  {message.sources && message.sources.length > 0 && (
-                    <div className="mt-3 pt-3 border-t border-slate-700/50">
-                      <p className="text-xs text-slate-400 mb-2 font-semibold">Mənbələr:</p>
-                      <div className="space-y-1">
-                        {message.sources.map((source, idx) => (
-                          <div key={idx} className="text-xs text-slate-300">
-                            {source.title && (
-                              <span className="font-medium">{source.title}</span>
-                            )}
-                            {source.page && (
-                              <span className="text-slate-400 ml-1">({source.page})</span>
-                            )}
-                            {source.url && (
-                              <a 
-                                href={source.url} 
-                                target="_blank" 
-                                rel="noopener noreferrer"
-                                className="text-indigo-400 hover:text-indigo-300 ml-2 underline"
-                              >
-                                Link
-                              </a>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  <div className={`mt-2 flex items-center gap-2 ${
-                    message.role === 'user' ? 'justify-end' : 'justify-between'
-                  }`}>
-                    <span className={`text-xs ${
-                      message.role === 'user' ? 'text-indigo-100/80' : 'text-slate-400'
-                    }`}>
-                      {message.timestamp.toLocaleTimeString('az-AZ', { hour: '2-digit', minute: '2-digit' })}
-                    </span>
-                    {message.role === 'assistant' && message.content.trim() && !isTaskMode && (
-                      <button
-                        type="button"
-                        onClick={() => void playAssistantTts(message)}
-                        disabled={ttsLoadingId === message.id || sessionCompleted}
-                        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-600/80 bg-slate-900/60 px-2.5 py-1 text-xs text-slate-300 hover:bg-slate-800 hover:text-white disabled:opacity-50"
-                        title={`Səsli oxu (${language}, female)`}
-                      >
-                        {ttsLoadingId === message.id ? (
-                          <>
-                            <svg className="h-3.5 w-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
-                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                            </svg>
-                            Yüklənir
-                          </>
-                        ) : ttsPlayingId === message.id ? (
-                          <>
-                            <svg className="h-3.5 w-3.5" fill="currentColor" viewBox="0 0 24 24">
-                              <path d="M6 5h4v14H6V5zm8 0h4v14h-4V5z" />
-                            </svg>
-                            Dayandır
-                          </>
-                        ) : (
-                          <>
-                            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072M12 6v12m0-12a3 3 0 000 6m0 0a3 3 0 000 6m-7-6h1m14 0h1" />
-                            </svg>
-                            Dinlə
-                          </>
-                        )}
-                      </button>
+                  <div
+                    className={`rounded-2xl px-5 py-3.5 shadow-lg ${
+                      message.role === 'user'
+                        ? 'max-w-[80%] bg-gradient-to-br from-indigo-600 to-indigo-700 text-white'
+                        : isTableMessage || isTaskCommandUi
+                          ? 'w-full max-w-full bg-slate-800/90 backdrop-blur text-slate-100 border border-slate-700/50'
+                          : isTaskMode && message.role === 'assistant'
+                            ? 'max-w-[92%] bg-slate-800/90 backdrop-blur text-slate-100 border border-amber-900/30'
+                            : 'max-w-[85%] bg-slate-800/90 backdrop-blur text-slate-100 border border-slate-700/50'
+                    } transition-all duration-200 hover:shadow-xl ${
+                      isTaskCommandUi ? 'border-amber-900/30' : ''
+                    }`}
+                  >
+                    {isTaskCommandUi && message.taskCommand ? (
+                      <TaskCommandView
+                        command={message.taskCommand}
+                        fallbackText={message.content || undefined}
+                        onPrefillMessage={handlePrefillTaskCommand}
+                      />
+                    ) : (
+                      <ChatMessageContent content={message.content} variant={message.role} />
                     )}
+
+                    {message.sources && message.sources.length > 0 && (
+                      <div className="mt-3 pt-3 border-t border-slate-700/50">
+                        <p className="text-xs text-slate-400 mb-2 font-semibold">Mənbələr:</p>
+                        <div className="space-y-1">
+                          {message.sources.map((source, idx) => (
+                            <div key={idx} className="text-xs text-slate-300">
+                              {source.title && <span className="font-medium">{source.title}</span>}
+                              {source.page && (
+                                <span className="text-slate-400 ml-1">({source.page})</span>
+                              )}
+                              {source.url && (
+                                <a
+                                  href={source.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-indigo-400 hover:text-indigo-300 ml-2 underline"
+                                >
+                                  Link
+                                </a>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {message.clarificationOptions &&
+                      message.clarificationOptions.length > 0 &&
+                      !sessionCompleted && (
+                        <div className="mt-3 pt-3 border-t border-slate-700/50 space-y-2">
+                          <p className="text-xs text-slate-400 font-semibold">
+                            Seçim edin (clarification)
+                          </p>
+                          <div className="flex flex-wrap gap-2">
+                            {message.clarificationOptions.map((option) => (
+                              <button
+                                key={option.id}
+                                type="button"
+                                disabled={isLoading}
+                                onClick={() => handleClarificationOption(option)}
+                                className="rounded-lg border border-indigo-500/40 bg-indigo-950/40 px-3 py-1.5 text-xs text-indigo-200 hover:bg-indigo-900/50 disabled:opacity-50"
+                              >
+                                {option.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                    {message.suggestions &&
+                      message.suggestions.length > 0 &&
+                      !sessionCompleted && (
+                        <div className="mt-3 pt-3 border-t border-slate-700/50 space-y-2">
+                          <p className="text-xs text-slate-400 font-semibold">Təkliflər</p>
+                          <div className="flex flex-wrap gap-2">
+                            {message.suggestions.map((suggestion, idx) => (
+                              <button
+                                key={`${suggestion.message}-${idx}`}
+                                type="button"
+                                disabled={isLoading}
+                                onClick={() => handleSuggestion(suggestion)}
+                                className="rounded-lg border border-emerald-700/50 bg-emerald-950/30 px-3 py-1.5 text-xs text-emerald-200 hover:bg-emerald-900/40 disabled:opacity-50"
+                              >
+                                {suggestion.label || suggestion.message}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                    <div
+                      className={`mt-2 flex items-center gap-2 ${
+                        message.role === 'user' ? 'justify-end' : 'justify-between'
+                      }`}
+                    >
+                      <span
+                        className={`text-xs ${
+                          message.role === 'user' ? 'text-indigo-100/80' : 'text-slate-400'
+                        }`}
+                      >
+                        {message.timestamp.toLocaleTimeString('az-AZ', {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}
+                      </span>
+                      {message.role === 'assistant' &&
+                        message.content.trim() &&
+                        !isTaskMode && (
+                          <button
+                            type="button"
+                            onClick={() => void playAssistantTts(message)}
+                            disabled={ttsLoadingId === message.id || sessionCompleted}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-600/80 bg-slate-900/60 px-2.5 py-1 text-xs text-slate-300 hover:bg-slate-800 hover:text-white disabled:opacity-50"
+                            title={`Səsli oxu (${language})`}
+                          >
+                            {ttsLoadingId === message.id ? (
+                              <>
+                                <svg className="h-3.5 w-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                                </svg>
+                                Yüklənir
+                              </>
+                            ) : ttsPlayingId === message.id ? (
+                              <>
+                                <svg className="h-3.5 w-3.5" fill="currentColor" viewBox="0 0 24 24">
+                                  <path d="M6 5h4v14H6V5zm8 0h4v14h-4V5z" />
+                                </svg>
+                                Dayandır
+                              </>
+                            ) : (
+                              <>
+                                <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072M12 6v12m0-12a3 3 0 000 6m0 0a3 3 0 000 6m-7-6h1m14 0h1" />
+                                </svg>
+                                Dinlə
+                              </>
+                            )}
+                          </button>
+                        )}
+                    </div>
                   </div>
                 </div>
-              </div>
-            );
+              );
             })}
             {isLoading && (
               <div className="flex justify-start">
@@ -913,11 +863,13 @@ export default function ChatInterface({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input Area */}
       <div className="shrink-0 border-t border-slate-800 p-4 bg-slate-950/50">
         {sessionCompleted && (
           <div className="mb-3 rounded-xl border border-emerald-800/50 bg-emerald-950/30 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
-            <p className="text-sm text-emerald-300">Söhbət tamamlandı (status: completed).</p>
+            <p className="text-sm text-emerald-300">
+              Söhbət tamamlandı
+              {savedRating != null ? ` · qiymət: ${savedRating}/5` : ''}.
+            </p>
             <button
               type="button"
               onClick={handleStartNewAfterFeedback}
@@ -961,7 +913,7 @@ export default function ChatInterface({
               <button
                 type="button"
                 disabled={isSubmittingFeedback}
-                onClick={() => submitSessionFeedback(false)}
+                onClick={() => void submitSessionFeedback(false)}
                 className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
               >
                 {isSubmittingFeedback ? 'Göndərilir...' : 'Göndər və bitir'}
@@ -969,7 +921,7 @@ export default function ChatInterface({
               <button
                 type="button"
                 disabled={isSubmittingFeedback}
-                onClick={() => submitSessionFeedback(true)}
+                onClick={() => void submitSessionFeedback(true)}
                 className="rounded-lg border border-slate-600 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800 disabled:opacity-50"
               >
                 Qiymətləndirmədən bitir
@@ -1005,15 +957,19 @@ export default function ChatInterface({
                 Bağla
               </button>
             )}
-            {conversationId && messages.length > 0 && !sessionCompleted && !showSessionFeedback && !isTaskMode && (
-              <button
-                type="button"
-                onClick={() => setShowSessionFeedback(true)}
-                className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
-              >
-                Söhbəti bitir
-              </button>
-            )}
+            {conversationId &&
+              messages.length > 0 &&
+              !sessionCompleted &&
+              !showSessionFeedback &&
+              !isTaskMode && (
+                <button
+                  type="button"
+                  onClick={() => setShowSessionFeedback(true)}
+                  className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
+                >
+                  Söhbəti bitir
+                </button>
+              )}
             <select
               id="chat-language"
               value={language}
@@ -1021,7 +977,7 @@ export default function ChatInterface({
               disabled={isLoading || sessionCompleted}
               className="bg-slate-800/90 border border-slate-700/50 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 disabled:opacity-50"
             >
-              {CHAT_LANGUAGES.map((option) => (
+              {CHAT_LANGUAGE_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
                 </option>
@@ -1050,8 +1006,8 @@ export default function ChatInterface({
             </div>
           </div>
         )}
-        {ttsError && !isTaskMode && (
-          <p className="mb-2 text-xs text-red-400">{ttsError}</p>
+        {(ttsError || sttError) && !isTaskMode && (
+          <p className="mb-2 text-xs text-red-400">{ttsError || sttError}</p>
         )}
         <div className="flex gap-3 items-end min-w-0">
           <div className="flex-1 relative min-w-0">
@@ -1068,12 +1024,48 @@ export default function ChatInterface({
               className="w-full bg-slate-800/90 backdrop-blur border border-slate-700/50 rounded-xl px-5 py-4 pr-14 text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 resize-none transition-all duration-200"
               rows={1}
               style={{ minHeight: '52px', maxHeight: '120px' }}
-              disabled={isLoading || sessionCompleted}
+              disabled={isLoading || sessionCompleted || isTranscribing}
             />
           </div>
+          {!isTaskMode && (
+            <button
+              type="button"
+              onClick={toggleRecording}
+              disabled={isLoading || sessionCompleted || isTranscribing}
+              title={
+                isRecording
+                  ? 'Stop recording'
+                  : isTranscribing
+                    ? 'Transcribing…'
+                    : 'Speak (fills message box, does not send)'
+              }
+              className={`rounded-xl border px-4 py-4 text-sm transition disabled:opacity-50 ${
+                isRecording
+                  ? 'border-rose-500 bg-rose-600/20 text-rose-300'
+                  : 'border-slate-700 bg-slate-800 text-slate-300 hover:bg-slate-700'
+              }`}
+              aria-label={isRecording ? 'Stop recording' : 'Start voice input'}
+            >
+              {isTranscribing ? (
+                <svg className="h-5 w-5 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                </svg>
+              ) : (
+                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M12 14a3 3 0 003-3V7a3 3 0 10-6 0v4a3 3 0 003 3zm5-3a5 5 0 01-10 0m5 5v3m-3 0h6"
+                  />
+                </svg>
+              )}
+            </button>
+          )}
           <button
             onClick={sendMessage}
-            disabled={!inputMessage.trim() || isLoading || sessionCompleted}
+            disabled={!inputMessage.trim() || isLoading || sessionCompleted || isTranscribing}
             className="px-7 py-4 bg-gradient-to-r from-indigo-600 to-indigo-700 text-white rounded-xl font-semibold hover:from-indigo-700 hover:to-indigo-800 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 min-w-[120px] justify-center shadow-lg hover:shadow-xl disabled:hover:shadow-lg"
           >
             {isLoading ? (
@@ -1098,4 +1090,3 @@ export default function ChatInterface({
     </div>
   );
 }
-

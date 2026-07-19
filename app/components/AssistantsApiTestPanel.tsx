@@ -59,8 +59,8 @@ const TOGGLES: Array<{
   },
   {
     key: 'includeTtsGender',
-    label: 'gender (female)',
-    hint: 'new — POST /v1/tts',
+    label: 'gender',
+    hint: 'optional — POST /v1/tts',
     group: 'tts',
   },
 ];

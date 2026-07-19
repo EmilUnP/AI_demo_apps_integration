@@ -6,57 +6,41 @@ import {
   upstreamJson,
   validationErrorResponse,
 } from '@/lib/chatApiServer';
-import { feedbackProxyRequestSchema } from '@/lib/chatTypes';
+import { sttProxyRequestSchema } from '@/lib/chatTypes';
 
+/** Proxy POST /api/v1/stt — Whisper transcription. Returns JSON { success, data: { text } }. */
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const parsed = feedbackProxyRequestSchema.safeParse(body);
+    const parsed = sttProxyRequestSchema.safeParse(body);
     if (!parsed.success) {
       return NextResponse.json(validationErrorResponse(parsed.error), { status: 400 });
     }
 
-    const {
-      assistantId,
-      conversation_id,
-      rating,
-      satisfaction_rating,
-      feedback_text,
-      helpful,
-      skip_rating,
-    } = parsed.data;
-
+    const { assistantId, audio_base64, format, language } = parsed.data;
     const apiKey = resolveAssistantApiKey(assistantId, 'chat');
     if (!apiKey) {
       return NextResponse.json(missingAssistantKeyResponse(assistantId, 'chat'), { status: 503 });
     }
 
     const payload: Record<string, unknown> = {
-      conversation_id,
+      audio_base64,
+      format,
     };
+    if (language) payload.language = language;
 
-    const score = rating ?? satisfaction_rating;
-
-    if (skip_rating === true) {
-      payload.skip_rating = true;
-    } else if (score != null) {
-      payload.rating = score;
-      payload.helpful = typeof helpful === 'boolean' ? helpful : score >= 3;
-    }
-
-    if (feedback_text) payload.feedback_text = feedback_text;
-
-    const { response, data } = await upstreamJson('/v1/feedback', apiKey, {
+    const { response, data } = await upstreamJson('/v1/stt', apiKey, {
       method: 'POST',
       body: JSON.stringify(payload),
     });
 
     return NextResponse.json(data, { status: response.status });
   } catch (error: unknown) {
+    console.error('[STT Proxy] Unexpected error:', error);
     return NextResponse.json(
       {
         success: false,
-        error: safeErrorMessage(error, 'Failed to submit feedback'),
+        error: safeErrorMessage(error, 'STT failed'),
         code: 'PROXY_ERROR',
       },
       { status: 500 }

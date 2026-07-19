@@ -1,68 +1,73 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { chatApiUrl, chatAuthHeaders, parseJsonResponse } from '@/lib/chatApiServer';
-
-const normalizeMessages = (data: unknown): Record<string, string>[] => {
-  if (!data || typeof data !== 'object') return [];
-  const obj = data as Record<string, unknown>;
-  if (Array.isArray(obj.messages)) return obj.messages as Record<string, string>[];
-  if (Array.isArray(data)) return data as Record<string, string>[];
-  return [];
-};
-
-const extractStatus = (data: unknown): string | undefined => {
-  if (!data || typeof data !== 'object' || Array.isArray(data)) return undefined;
-  const status = (data as Record<string, unknown>).status;
-  return typeof status === 'string' ? status : undefined;
-};
+import {
+  extractConversationDetail,
+  missingAssistantKeyResponse,
+  resolveAssistantApiKey,
+  safeErrorMessage,
+  upstreamJson,
+  validationErrorResponse,
+} from '@/lib/chatApiServer';
+import { conversationMessagesQuerySchema } from '@/lib/chatTypes';
 
 export async function GET(
   request: NextRequest,
   { params }: { params: { id: string } }
 ) {
   try {
-    const apiKey = request.nextUrl.searchParams.get('apiKey');
+    const parsed = conversationMessagesQuerySchema.safeParse({
+      assistantId: request.nextUrl.searchParams.get('assistantId'),
+    });
+    if (!parsed.success) {
+      return NextResponse.json(validationErrorResponse(parsed.error), { status: 400 });
+    }
+
+    const { assistantId } = parsed.data;
+    const apiKey = resolveAssistantApiKey(assistantId, 'chat');
     if (!apiKey) {
+      return NextResponse.json(missingAssistantKeyResponse(assistantId, 'chat'), { status: 503 });
+    }
+
+    const conversationId = params.id;
+    if (!conversationId?.trim()) {
       return NextResponse.json(
-        { success: false, error: 'apiKey is required', code: 'MISSING_PARAMS' },
+        { success: false, error: 'conversation id is required', code: 'MISSING_PARAMS' },
         { status: 400 }
       );
     }
 
-    const conversationId = params.id;
     const v1Query = new URLSearchParams({
       action: 'conversations',
       id: conversationId,
     });
 
-    const endpoints = [
-      chatApiUrl(`/v1/data?${v1Query}`),
-      chatApiUrl(`/v1/chat/conversations/${encodeURIComponent(conversationId)}/messages`),
-      chatApiUrl(`/chat/conversations/${encodeURIComponent(conversationId)}/messages`),
-    ];
+    const { response, data } = await upstreamJson(`/v1/data?${v1Query}`, apiKey);
+    const payload = data as { success?: boolean; data?: unknown; error?: string; code?: string };
 
-    for (const url of endpoints) {
-      const response = await fetch(url, { headers: chatAuthHeaders(apiKey) });
-      if (response.status === 404) continue;
-
-      const parsed = (await parseJsonResponse(response)) as {
-        success?: boolean;
-        data?: unknown;
-      };
-
-      const messages = normalizeMessages(parsed.data);
-      const status = extractStatus(parsed.data);
-
-      if (messages.length > 0 || status || parsed.success !== false) {
-        return NextResponse.json(
-          { success: true, data: { messages, status: status || 'active' } },
-          { status: response.status }
-        );
-      }
+    if (payload.success === false) {
+      return NextResponse.json(payload, { status: response.status });
     }
 
-    return NextResponse.json({ success: true, data: { messages: [], status: 'active' } });
+    const detail = extractConversationDetail(payload.data ?? payload);
+
+    return NextResponse.json(
+      {
+        success: true,
+        data: {
+          messages: detail.messages,
+          status: detail.status || 'active',
+          satisfaction_rating: detail.satisfaction_rating ?? null,
+        },
+      },
+      { status: response.ok ? 200 : response.status }
+    );
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : 'Failed to load messages';
-    return NextResponse.json({ success: false, error: message, code: 'PROXY_ERROR' }, { status: 500 });
+    return NextResponse.json(
+      {
+        success: false,
+        error: safeErrorMessage(error, 'Failed to load messages'),
+        code: 'PROXY_ERROR',
+      },
+      { status: 500 }
+    );
   }
 }
