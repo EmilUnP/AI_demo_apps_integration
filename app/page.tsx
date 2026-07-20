@@ -15,20 +15,12 @@ export default function Home() {
               Demo Səhifə
             </a>
             <div className="flex gap-6 items-center">
-              <a href="#features" className="text-slate-300 hover:text-indigo-300 transition-colors relative group">
-                Xüsusiyyətlər
-                <span className="absolute bottom-0 left-0 w-0 h-0.5 bg-indigo-400 group-hover:w-full transition-all duration-300"></span>
-              </a>
               <a href="/assistants" className="text-slate-300 hover:text-indigo-300 transition-colors relative group">
                 Köməkçilər
                 <span className="absolute bottom-0 left-0 w-0 h-0.5 bg-indigo-400 group-hover:w-full transition-all duration-300"></span>
               </a>
               <a href="/eduator-integration" className="text-slate-300 hover:text-indigo-300 transition-colors relative group">
                 Eduator Integration
-                <span className="absolute bottom-0 left-0 w-0 h-0.5 bg-indigo-400 group-hover:w-full transition-all duration-300"></span>
-              </a>
-              <a href="#how" className="text-slate-300 hover:text-indigo-300 transition-colors relative group">
-                Haqqında
                 <span className="absolute bottom-0 left-0 w-0 h-0.5 bg-indigo-400 group-hover:w-full transition-all duration-300"></span>
               </a>
             </div>

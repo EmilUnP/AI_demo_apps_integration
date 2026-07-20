@@ -1050,21 +1050,20 @@ export default function EduatorIntegrationPage() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950">
-      <header className="sticky top-0 z-50 bg-slate-950/90 backdrop-blur-md border-b border-slate-800/50">
+      <header className="sticky top-0 z-50 bg-slate-950/90 backdrop-blur-md border-b border-slate-800/50 shadow-lg">
         <nav className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
           <div className="flex justify-between items-center">
             <Link href="/" className="text-2xl font-bold text-indigo-400 hover:text-indigo-300 transition-colors">
               Demo Səhifə
             </Link>
             <div className="flex gap-6 items-center">
-              <Link href="/" className="text-slate-300 hover:text-indigo-300 transition-colors">
-                Ana səhifə
-              </Link>
-              <Link href="/assistants" className="text-slate-300 hover:text-indigo-300 transition-colors">
+              <Link href="/assistants" className="text-slate-300 hover:text-indigo-300 transition-colors relative group">
                 Köməkçilər
+                <span className="absolute bottom-0 left-0 w-0 h-0.5 bg-indigo-400 group-hover:w-full transition-all duration-300" />
               </Link>
-              <Link href="/test-api" className="text-slate-300 hover:text-indigo-300 transition-colors">
-                Test API
+              <Link href="/eduator-integration" className="text-slate-300 hover:text-indigo-300 transition-colors relative group">
+                Eduator Integration
+                <span className="absolute bottom-0 left-0 w-0 h-0.5 bg-indigo-400 group-hover:w-full transition-all duration-300" />
               </Link>
             </div>
           </div>
